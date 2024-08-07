@@ -33,7 +33,7 @@ struct NoteEvent {
     std::string note;
     bool isPress;
     int velocity;
-    bool isSustain;  // New field to indicate if this is a sustain event
+    bool isSustain; 
 
     NoteEvent() noexcept : time(Duration::zero()), isPress(false), velocity(0), isSustain(false) {}
     NoteEvent(Duration t, std::string n, bool p, int v, bool s = false) noexcept

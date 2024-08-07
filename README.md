@@ -5,4 +5,4 @@ To-Do List:
 
 - Fix sustain pedal handling for more accurate simulations.
 - Add a "legit mode" MIDI loading option for authentic playback.
-- Develop a MIDI to QWERTY mapping feature for enhanced user customization.
+- Final touches, remappable keys in config etc

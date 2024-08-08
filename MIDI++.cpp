@@ -1369,25 +1369,19 @@ private:
         return 1.0;
     }
 }; 
-
 class HighResolutionTimer {
 private:
     static constexpr uint64_t FREQUENCY = 1'000'000'000ULL;
     std::atomic<int64_t> offset{ 0 };
     std::atomic<uint64_t> start_time{ 0 };
     const double frequency_multiplier;
-    std::atomic<int64_t> average_overshoot{ 1000 }; 
-    static constexpr int BUFFER_SIZE = 4; 
-    std::array<std::atomic<int64_t>, BUFFER_SIZE> overshoot_buffer;
-    std::atomic<int> buffer_index{ 0 };
+    std::atomic<double> ema_overshoot{ 1000.0 };
+    static constexpr double ALPHA = 0.4;
     static constexpr int CALIBRATION_ROUNDS = 10;
 
 public:
     HighResolutionTimer() :
         frequency_multiplier(static_cast<double>(FREQUENCY) / static_cast<double>(performanceFrequency())) {
-        for (auto& a : overshoot_buffer) {
-            a.store(0, std::memory_order_relaxed);
-        }
         calibrate();
     }
 
@@ -1404,10 +1398,10 @@ public:
     }
 
     void sleep_until(std::chrono::nanoseconds target_time) noexcept {
-        constexpr std::chrono::nanoseconds SPIN_THRESHOLD(10000); 
+        constexpr std::chrono::nanoseconds SPIN_THRESHOLD(10000);
 
         auto current_time = elapsed();
-        auto sleep_duration = target_time - current_time - std::chrono::nanoseconds(average_overshoot.load(std::memory_order_relaxed));
+        auto sleep_duration = target_time - current_time - std::chrono::nanoseconds(static_cast<int64_t>(ema_overshoot.load(std::memory_order_relaxed)));
 
         if (sleep_duration > SPIN_THRESHOLD) {
             std::this_thread::sleep_for(sleep_duration - SPIN_THRESHOLD);
@@ -1418,7 +1412,7 @@ public:
         }
 
         auto actual_time = elapsed();
-        record_overshoot(actual_time - target_time);
+        update_ema_overshoot(actual_time - target_time);
     }
 
     void adjust(std::chrono::nanoseconds adjustment) noexcept {
@@ -1437,23 +1431,14 @@ private:
             auto start = elapsed();
             std::this_thread::sleep_for(std::chrono::microseconds(100));
             auto end = elapsed();
-            record_overshoot(end - start - std::chrono::microseconds(100));
+            update_ema_overshoot(end - start - std::chrono::microseconds(100));
         }
-        update_average_overshoot();
     }
 
-    void record_overshoot(std::chrono::nanoseconds overshoot) noexcept {
-        int index = buffer_index.fetch_add(1, std::memory_order_relaxed) % BUFFER_SIZE;
-        overshoot_buffer[index].store(overshoot.count(), std::memory_order_relaxed);
-        update_average_overshoot();
-    }
-
-    void update_average_overshoot() noexcept {
-        int64_t sum = 0;
-        for (const auto& a : overshoot_buffer) {
-            sum += a.load(std::memory_order_relaxed);
-        }
-        average_overshoot.store(sum / BUFFER_SIZE, std::memory_order_relaxed);
+    void update_ema_overshoot(std::chrono::nanoseconds overshoot) noexcept {
+        double current_ema = ema_overshoot.load(std::memory_order_relaxed);
+        double new_ema = (ALPHA * overshoot.count()) + ((1.0 - ALPHA) * current_ema);
+        ema_overshoot.store(new_ema, std::memory_order_relaxed);
     }
 };
 class alignas(64) NoteEventPool {
@@ -1809,8 +1794,6 @@ public:
         for (int i = 0; i < max_possible_steps; ++i) {
             arrowsend(volume_down_key_code, true);
         }
-
-        // Then, increase to the initial volume
         int steps_to_initial = (config.volume.INITIAL_VOLUME - config.volume.MIN_VOLUME) / config.volume.VOLUME_STEP;
         for (int i = 0; i < steps_to_initial; ++i) {
             arrowsend(volume_up_key_code, true);
@@ -2045,12 +2028,10 @@ private:
 
         if (upperKey.substr(0, 3) == "VK_" || upperKey.substr(0, 2) == "VK") {
             upperKey = upperKey.substr(upperKey[2] == '_' ? 3 : 2);
-            std::cout << "Stripped 'VK' prefix, new upperKey: " << upperKey << std::endl;
         }
 
         auto it = keyMap.find(upperKey);
         if (it != keyMap.end()) {
-            std::cout << "Found key in keyMap: " << upperKey << " -> " << it->second << std::endl;
             return it->second;
         }
         if (upperKey.length() == 1) {
@@ -2059,7 +2040,6 @@ private:
                 SHORT vk = VkKeyScanA(ch);
                 if (vk != -1) {
                     int virtualKeyCode = vk & 0xFF;
-                    std::cout << "Mapped single character to virtual key code: " << virtualKeyCode << std::endl;
                     return virtualKeyCode;
                 }
             }
@@ -2067,14 +2047,11 @@ private:
         try {
             int vkCode = std::stoi(upperKey);
             if (vkCode >= 0 && vkCode <= 255) {
-                std::cout << "Interpreted as direct virtual key code: " << vkCode << std::endl;
                 return vkCode;
             }
         }
         catch (const std::exception&) {
         }
-
-        std::cout << "Key not found: " << upperKey << std::endl;
         return 0;
     }
 
@@ -3020,7 +2997,7 @@ private:
 
                 if (config.legit_mode.ENABLED) {
                     if (note_skip(gen) < config.legit_mode.NOTE_SKIP_CHANCE) {
-                        continue;  // Skip this note
+                        continue;  
                     }
 
                     if (extra_delay(gen) < config.legit_mode.EXTRA_DELAY_CHANCE) {

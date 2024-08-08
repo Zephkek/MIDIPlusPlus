@@ -1,5 +1,5 @@
-﻿#define NOMINMAX
-
+#define NOMINMAX
+#include <cmath>
 #include <windows.h>
 #include <iostream>
 #include <fstream>
@@ -23,34 +23,183 @@
 #include <numeric>
 #include <set>
 #include "concurrentqueue.h"
-
+#include "json.hpp"
+#include <random>
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using Duration = Clock::duration;
+static constexpr size_t CACHE_LINE_SIZE = 64; // now watch someone come to me with a pentium cpu or some fucking amd athlon
 
-struct NoteEvent {
+struct alignas(CACHE_LINE_SIZE) NoteEvent {
     Duration time;
     std::string note;
     bool isPress;
     int velocity;
-    bool isSustain; 
+    bool isSustain;
+    int sustainValue;
 
-    NoteEvent() noexcept : time(Duration::zero()), isPress(false), velocity(0), isSustain(false) {}
-    NoteEvent(Duration t, std::string n, bool p, int v, bool s = false) noexcept
-        : time(t), note(std::move(n)), isPress(p), velocity(v), isSustain(s) {}
+    NoteEvent() noexcept : time(Duration::zero()), isPress(false), velocity(0), isSustain(false), sustainValue(0) {}
+    NoteEvent(Duration t, std::string_view n, bool p, int v, bool s = false, int sv = 0) noexcept
+        : time(t), note(n), isPress(p), velocity(v), isSustain(s), sustainValue(sv) {}
 
     bool operator>(const NoteEvent& other) const noexcept { return time > other.time; }
 };
+
+using json = nlohmann::json;
 struct Config {
-    int MIN_VOLUME;
-    int VOLUME_STEP;
-    int INITIAL_VOLUME;
-    int ADJUSTMENT_INTERVAL_MS;
-    int DEFAULT_MAX_VOLUME;
-    int SUSTAIN_CUTOFF;
+    struct VolumeSettings {
+        int MIN_VOLUME = 0;
+        int MAX_VOLUME = 0;
+        int INITIAL_VOLUME = 0;
+        int VOLUME_STEP = 0;
+        int ADJUSTMENT_INTERVAL_MS = 0;
+    };
+
+    struct SustainSettings {
+        int SUSTAIN_CUTOFF = 0;
+    };
+
+    struct LegitModeSettings {
+        bool ENABLED = false;
+        double TIMING_VARIATION = 0.1;
+        double NOTE_SKIP_CHANCE = 0.02;
+        double EXTRA_DELAY_CHANCE = 0.05;
+        double EXTRA_DELAY_MIN = 0.05;
+        double EXTRA_DELAY_MAX = 0.2;
+    };
+
+    struct HotkeySettings {
+        std::string SUSTAIN_KEY = "VK_SPACE";
+        std::string VOLUME_UP_KEY = "VK_RIGHT";
+        std::string VOLUME_DOWN_KEY = "VK_LEFT";
+    };
+
+    VolumeSettings volume;
+    SustainSettings sustain;
+    LegitModeSettings legit_mode;
+    HotkeySettings hotkeys;
+    std::map<std::string, std::map<std::string, std::string>> key_mappings;
+    std::map<std::string, std::string> controls;
 };
 
-constexpr std::array<const char*, 12> NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+Config config;
+void from_json(const json& j, Config::HotkeySettings& h) {
+    j.at("SUSTAIN_KEY").get_to(h.SUSTAIN_KEY);
+    j.at("VOLUME_UP_KEY").get_to(h.VOLUME_UP_KEY);
+    j.at("VOLUME_DOWN_KEY").get_to(h.VOLUME_DOWN_KEY);
+}
+
+void from_json(const json& j, Config::LegitModeSettings& l) {
+    j.at("ENABLED").get_to(l.ENABLED);
+    j.at("TIMING_VARIATION").get_to(l.TIMING_VARIATION);
+    j.at("NOTE_SKIP_CHANCE").get_to(l.NOTE_SKIP_CHANCE);
+    j.at("EXTRA_DELAY_CHANCE").get_to(l.EXTRA_DELAY_CHANCE);
+    j.at("EXTRA_DELAY_MIN").get_to(l.EXTRA_DELAY_MIN);
+    j.at("EXTRA_DELAY_MAX").get_to(l.EXTRA_DELAY_MAX);
+}
+
+void from_json(const json& j, Config::VolumeSettings& v) {
+    j.at("MIN_VOLUME").get_to(v.MIN_VOLUME);
+    j.at("MAX_VOLUME").get_to(v.MAX_VOLUME);
+    j.at("INITIAL_VOLUME").get_to(v.INITIAL_VOLUME);
+    j.at("VOLUME_STEP").get_to(v.VOLUME_STEP);
+    j.at("ADJUSTMENT_INTERVAL_MS").get_to(v.ADJUSTMENT_INTERVAL_MS);
+}
+
+void from_json(const json& j, Config::SustainSettings& s) {
+    j.at("SUSTAIN_CUTOFF").get_to(s.SUSTAIN_CUTOFF);
+}
+
+void from_json(const json& j, Config& c) {
+    j.at("VOLUME_SETTINGS").get_to(c.volume);
+    j.at("SUSTAIN_SETTINGS").get_to(c.sustain);
+    j.at("KEY_MAPPINGS").get_to(c.key_mappings);
+    j.at("CONTROLS").get_to(c.controls);
+    j.at("LEGIT_MODE_SETTINGS").get_to(c.legit_mode);
+    j.at("HOTKEY_SETTINGS").get_to(c.hotkeys);
+
+
+}
+
+void setDefaultConfig() {
+    config.volume = { 10, 200, 100, 10, 50 };
+    config.sustain = { 64 };
+    config.hotkeys = {
+       "VK_SPACE",  // SUSTAIN_KEY
+       "VK_RIGHT", // VOLUME_UP_KEY
+       "VK_LEFT"   // VOLUME_DOWN_KEY
+    };
+    config.key_mappings["LIMITED"] = {
+        {"C2", "1"}, {"C#2", "!"}, {"D2", "2"}, {"D#2", "@"}, {"E2", "3"}, {"F2", "4"},
+        {"F#2", "$"}, {"G2", "5"}, {"G#2", "%"}, {"A2", "6"}, {"A#2", "^"}, {"B2", "7"},
+        {"C3", "8"}, {"C#3", "*"}, {"D3", "9"}, {"D#3", "("}, {"E3", "0"}, {"F3", "q"},
+        {"F#3", "Q"}, {"G3", "w"}, {"G#3", "W"}, {"A3", "e"}, {"A#3", "E"}, {"B3", "r"},
+        {"C4", "t"}, {"C#4", "T"}, {"D4", "y"}, {"D#4", "Y"}, {"E4", "u"}, {"F4", "i"},
+        {"F#4", "I"}, {"G4", "o"}, {"G#4", "O"}, {"A4", "p"}, {"A#4", "P"}, {"B4", "a"},
+        {"C5", "s"}, {"C#5", "S"}, {"D5", "d"}, {"D#5", "D"}, {"E5", "f"}, {"F5", "g"},
+        {"F#5", "G"}, {"G5", "h"}, {"G#5", "H"}, {"A5", "j"}, {"A#5", "J"}, {"B5", "k"},
+        {"C6", "l"}, {"C#6", "L"}, {"D6", "z"}, {"D#6", "Z"}, {"E6", "x"}, {"F6", "c"},
+        {"F#6", "C"}, {"G6", "v"}, {"G#6", "V"}, {"A6", "b"}, {"A#6", "B"}, {"B6", "n"},
+        {"C7", "m"}
+    };
+
+    config.key_mappings["FULL"] = {
+        {"A0", "ctrl+1"}, {"A#0", "ctrl+2"}, {"B0", "ctrl+3"}, {"C1", "ctrl+4"}, {"C#1", "ctrl+5"},
+        {"D1", "ctrl+6"}, {"D#1", "ctrl+7"}, {"E1", "ctrl+8"}, {"F1", "ctrl+9"}, {"F#1", "ctrl+0"},
+        {"G1", "ctrl+q"}, {"G#1", "ctrl+w"}, {"A1", "ctrl+e"}, {"A#1", "ctrl+r"}, {"B1", "ctrl+t"},
+        {"C2", "1"}, {"C#2", "!"}, {"D2", "2"}, {"D#2", "@"}, {"E2", "3"}, {"F2", "4"},
+        {"F#2", "$"}, {"G2", "5"}, {"G#2", "%"}, {"A2", "6"}, {"A#2", "^"}, {"B2", "7"},
+        {"C3", "8"}, {"C#3", "*"}, {"D3", "9"}, {"D#3", "("}, {"E3", "0"}, {"F3", "q"},
+        {"F#3", "Q"}, {"G3", "w"}, {"G#3", "W"}, {"A3", "e"}, {"A#3", "E"}, {"B3", "r"},
+        {"C4", "t"}, {"C#4", "T"}, {"D4", "y"}, {"D#4", "Y"}, {"E4", "u"}, {"F4", "i"},
+        {"F#4", "I"}, {"G4", "o"}, {"G#4", "O"}, {"A4", "p"}, {"A#4", "P"}, {"B4", "a"},
+        {"C5", "s"}, {"C#5", "S"}, {"D5", "d"}, {"D#5", "D"}, {"E5", "f"}, {"F5", "g"},
+        {"F#5", "G"}, {"G5", "h"}, {"G#5", "H"}, {"A5", "j"}, {"A#5", "J"}, {"B5", "k"},
+        {"C6", "l"}, {"C#6", "L"}, {"D6", "z"}, {"D#6", "Z"}, {"E6", "x"}, {"F6", "c"},
+        {"F#6", "C"}, {"G6", "v"}, {"G#6", "V"}, {"A6", "b"}, {"A#6", "B"}, {"B6", "n"},
+        {"C7", "m"}, {"C#7", "ctrl+y"}, {"D7", "ctrl+u"}, {"D#7", "ctrl+i"}, {"E7", "ctrl+o"},
+        {"F7", "ctrl+p"}, {"F#7", "ctrl+a"}, {"G7", "ctrl+s"}, {"G#7", "ctrl+d"}, {"A7", "ctrl+f"},
+        {"A#7", "ctrl+g"}, {"B7", "ctrl+h"}, {"C8", "ctrl+j"}
+    };
+
+    config.controls = {
+        {"PLAY_PAUSE", "VK_DELETE"},
+        {"REWIND", "VK_HOME"},
+        {"SKIP", "VK_END"},
+        {"SPEED_UP", "VK_PRIOR"},
+        {"SLOW_DOWN", "VK_NEXT"},
+        {"LOAD_NEW_SONG", "VK_F5"},
+        {"TOGGLE_88_KEY_MODE", "VK_F6"},
+        {"TOGGLE_VOLUME_ADJUSTMENT", "VK_F7"},
+        {"TOGGLE_TRANSPOSE_ADJUSTMENT", "VK_F8"},
+        {"TOGGLE_ADAPTIVE_TIMER", "VK_F9"},
+        {"STOP_AND_EXIT", "VK_ESCAPE"},
+        {"TOGGLE_SUSTAIN_MODE", "VK_F10"}
+    };
+}
+
+void loadConfig() {
+    std::string configPath = "config.json";
+    std::ifstream configFile(configPath);
+    if (!configFile.is_open()) {
+        std::cerr << "Config file not found at " << configPath << ". Using default settings." << std::endl;
+        setDefaultConfig();
+        return;
+    }
+
+    json j;
+    configFile >> j;
+
+    try {
+        j.get_to(config);
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error parsing config: " << e.what() << ". Using default settings." << std::endl;
+        setDefaultConfig();
+    }
+}
+
+constexpr double base_speed = 1.0;
 
 enum class ConsoleColor : int {
     Default = 39, Black = 30, Red = 31, Green = 32, Yellow = 33, Blue = 34, Magenta = 35, Cyan = 36,
@@ -68,27 +217,279 @@ enum class SustainMode {
 };
 
 SustainMode currentSustainMode = SustainMode::IG;
-Config config;
+
+void arrowsend(WORD scanCode, bool extended) {
+    INPUT inputs[2] = { 0 };
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wScan = scanCode;
+    inputs[0].ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wScan = scanCode;
+    inputs[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+    SendInput(2, inputs, sizeof(INPUT));
+}
+struct MidiEvent {
+    uint32_t absoluteTick = 0;
+    uint8_t status = 0;
+    uint8_t data1 = 0;
+    uint8_t data2 = 0;
+    std::vector<uint8_t> metaData;
+
+    [[nodiscard]] constexpr uint32_t getAbsoluteTick() const noexcept { return absoluteTick; }
+    [[nodiscard]] constexpr uint8_t getStatus() const noexcept { return status; }
+    [[nodiscard]] constexpr uint8_t getData1() const noexcept { return data1; }
+    [[nodiscard]] constexpr uint8_t getData2() const noexcept { return data2; }
+    [[nodiscard]] const std::vector<uint8_t>& getMetaData() const noexcept { return metaData; }
+
+    void setMetaData(std::vector<uint8_t>&& md) noexcept { metaData = std::move(md); }
+};
+
+struct TempoChange {
+    uint32_t tick;
+    uint32_t microsecondsPerQuarter;
+};
+
+struct TimeSignature {
+    uint32_t tick;
+    uint8_t numerator;
+    uint8_t denominator;
+    uint8_t clocksPerClick;
+    uint8_t thirtySecondNotesPerQuarter;
+};
+
+struct KeySignature {
+    uint32_t tick;
+    int8_t key;
+    uint8_t scale;
+};
+
+struct MidiTrack {
+    std::string name;
+    std::vector<MidiEvent> events;
+};
+
+struct MidiFile {
+    uint16_t format = 0;
+    uint16_t numTracks = 0;
+    uint16_t division = 0;
+    std::vector<MidiTrack> tracks;
+    std::vector<TempoChange> tempoChanges;
+    std::vector<TimeSignature> timeSignatures;
+    std::vector<KeySignature> keySignatures;
+};
+
+class MidiParser {
+private:
+    mutable std::ifstream file;
+
+    static constexpr uint32_t swapUint32(uint32_t value) noexcept {
+        return ((value >> 24) & 0x000000FF) | ((value >> 8) & 0x0000FF00) |
+            ((value << 8) & 0x00FF0000) | ((value << 24) & 0xFF000000);
+    }
+
+    static constexpr uint16_t swapUint16(uint16_t value) noexcept {
+        return (value >> 8) | (value << 8);
+    }
+
+    [[nodiscard]] bool readVarLen(uint32_t& value) {
+        value = 0;
+        uint8_t byte;
+        do {
+            if (!file.read(reinterpret_cast<char*>(&byte), 1)) return false;
+            value = (value << 7) | (byte & 0x7F);
+        } while (byte & 0x80);
+        return true;
+    }
+
+    [[nodiscard]] bool readInt32(uint32_t& value) {
+        if (!file.read(reinterpret_cast<char*>(&value), 4)) return false;
+        value = swapUint32(value);
+        return true;
+    }
+
+    [[nodiscard]] bool readInt16(uint16_t& value) {
+        if (!file.read(reinterpret_cast<char*>(&value), 2)) return false;
+        value = swapUint16(value);
+        return true;
+    }
+
+    [[nodiscard]] bool readChunk(char* buffer, size_t size) {
+        return file.read(buffer, size).good();
+    }
+
+    [[nodiscard]] bool validateTrackLength(std::streampos trackEnd) const {
+        return file.tellg() <= trackEnd;
+    }
+
+    [[nodiscard]] bool validateEventLength(uint32_t length, std::streampos trackEnd) const {
+        return file.tellg() + std::streampos(length) <= trackEnd;
+    }
+
+    void parseMetaEvent(MidiEvent& event, MidiFile& midiFile, uint32_t absoluteTick, std::streampos trackEnd) {
+        uint8_t metaType;
+        if (!file.read(reinterpret_cast<char*>(&metaType), 1)) return;
+        uint32_t length;
+        if (!readVarLen(length) || !validateEventLength(length, trackEnd)) return;
+
+        event.metaData.resize(length);
+        if (!file.read(reinterpret_cast<char*>(event.metaData.data()), length)) return;
+
+        event.status = 0xFF;
+        event.data1 = metaType;
+
+        switch (metaType) {
+        case 0x51:
+            if (length == 3) {
+                uint32_t microsecondsPerQuarter = (event.metaData[0] << 16) | (event.metaData[1] << 8) | event.metaData[2];
+                midiFile.tempoChanges.push_back({ absoluteTick, microsecondsPerQuarter });
+            }
+            break;
+        case 0x58:
+            if (length == 4) {
+                midiFile.timeSignatures.push_back({
+                    absoluteTick,
+                    event.metaData[0],
+                    static_cast<uint8_t>(1 << event.metaData[1]),
+                    event.metaData[2],
+                    event.metaData[3]
+                    });
+            }
+            break;
+        case 0x59:
+            if (length == 2) {
+                midiFile.keySignatures.push_back({
+                    absoluteTick,
+                    static_cast<int8_t>(event.metaData[0]),
+                    event.metaData[1]
+                    });
+            }
+            break;
+        }
+    }
+
+public:
+    void reset() {
+        file.close();
+        file.clear();
+    }
+
+    [[nodiscard]] MidiFile parse(const std::string& filename) {
+        reset();
+        file.open(filename, std::ios::binary);
+        if (!file.is_open()) throw std::runtime_error("Unable to open file: " + filename);
+
+        MidiFile midiFile;
+        char headerChunk[4];
+        if (!readChunk(headerChunk, 4) || std::string(headerChunk, 4) != "MThd")
+            throw std::runtime_error("Invalid MIDI file: Missing MThd");
+
+        uint32_t headerLength;
+        if (!readInt32(headerLength) || headerLength != 6)
+            throw std::runtime_error("Invalid MIDI header length");
+
+        if (!readInt16(midiFile.format) || !readInt16(midiFile.numTracks) || !readInt16(midiFile.division))
+            throw std::runtime_error("Error reading MIDI header fields");
+
+        if (midiFile.format > 2)
+            throw std::runtime_error("Unsupported MIDI format: " + std::to_string(midiFile.format));
+
+        for (int i = 0; i < midiFile.numTracks; ++i) {
+            char trackChunk[4];
+            if (!readChunk(trackChunk, 4) || std::string(trackChunk, 4) != "MTrk")
+                throw std::runtime_error("Invalid MIDI file: Missing MTrk");
+
+            uint32_t trackLength;
+            if (!readInt32(trackLength)) throw std::runtime_error("Error reading track length");
+
+            MidiTrack track;
+            uint32_t absoluteTick = 0;
+            uint8_t lastStatus = 0;
+            std::streampos trackEnd = file.tellg() + std::streampos(trackLength);
+
+            while (file.tellg() < trackEnd) {
+                uint32_t deltaTime;
+                if (!readVarLen(deltaTime)) break;
+                absoluteTick += deltaTime;
+                uint8_t status;
+                if (!file.read(reinterpret_cast<char*>(&status), 1)) break;
+
+                if (status < 0x80) {
+                    if (lastStatus == 0) break;
+                    status = lastStatus;
+                    file.seekg(-1, std::ios::cur);
+                }
+                else {
+                    lastStatus = status;
+                }
+
+                MidiEvent event;
+                event.absoluteTick = absoluteTick;
+                event.status = status;
+
+                if ((status & 0xF0) == 0x80 || (status & 0xF0) == 0x90 ||
+                    (status & 0xF0) == 0xA0 || (status & 0xF0) == 0xB0 ||
+                    (status & 0xF0) == 0xE0) {
+                    if (!file.read(reinterpret_cast<char*>(&event.data1), 1) ||
+                        !file.read(reinterpret_cast<char*>(&event.data2), 1)) break;
+                    event.data1 = std::min(event.data1, static_cast<uint8_t>(127));
+                    event.data2 = std::min(event.data2, static_cast<uint8_t>(127));
+                    track.events.push_back(event);
+                }
+                else if ((status & 0xF0) == 0xC0 || (status & 0xF0) == 0xD0) {
+                    if (!file.read(reinterpret_cast<char*>(&event.data1), 1)) break;
+                    event.data2 = 0;
+                    event.data1 = std::min(event.data1, static_cast<uint8_t>(127));
+                    track.events.push_back(event);
+                }
+                else if (status == 0xF0 || status == 0xF7) {
+                    uint32_t length;
+                    if (!readVarLen(length) || !validateEventLength(length, trackEnd)) break;
+                    event.metaData.resize(length);
+                    if (!file.read(reinterpret_cast<char*>(event.metaData.data()), length)) break;
+                    track.events.push_back(event);
+                }
+                else if (status == 0xFF) {
+                    parseMetaEvent(event, midiFile, absoluteTick, trackEnd);
+                    track.events.push_back(event);
+                }
+                else {
+                    continue;
+                }
+
+                if (!validateTrackLength(trackEnd)) {
+                    std::cerr << "This MIDI file is potentially corrupted, only valid data were loaded." << std::endl;
+                    break;
+                }
+            }
+            midiFile.tracks.push_back(std::move(track));
+        }
+        file.close();
+        return midiFile;
+    }
+};
 
 MidiFile midi_file;
 class TransposeSuggestion {
-    std::array<std::string, 12> note_names = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    static constexpr std::array<std::string_view, 12> NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
 public:
     struct VectorHash {
-        std::size_t operator()(const std::vector<int>& v) const {
-            std::hash<int> hasher;
-            std::size_t seed = 0;
+        std::size_t operator()(const std::vector<int>& v) const noexcept {
+            std::size_t seed = v.size();
             for (int i : v) {
-                seed ^= hasher(i) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                seed ^= static_cast<size_t>(i) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             }
             return seed;
         }
     };
+    [[nodiscard]] static constexpr int getPitchClass(int midiNote) noexcept {
+        return midiNote % 12;
+    }
+
     std::vector<double> durations;
 
-    std::string estimateKey(const std::vector<int>& notes, const std::vector<double>& durations) {
-        std::array<double, 12> major_profile = { 0.748, 0.060, 0.488, 0.082, 0.670, 0.460, 0.096, 0.715, 0.104, 0.366, 0.057, 0.400 };
+    [[nodiscard]] std::string estimateKey(const std::vector<int>& notes, const std::vector<double>& durations) const {
+    std::array<double, 12> major_profile = { 0.748, 0.060, 0.488, 0.082, 0.670, 0.460, 0.096, 0.715, 0.104, 0.366, 0.057, 0.400 };
         std::array<double, 12> minor_profile = { 0.712, 0.084, 0.474, 0.618, 0.049, 0.460, 0.105, 0.747, 0.404, 0.067, 0.133, 0.330 };
 
         std::vector<double> pitch_class_weighted(12, 0.0);
@@ -149,11 +550,11 @@ public:
 
         keySpecialCases(pitch_class_weighted, best_tonic, best_mode);
 
-        return note_names[best_tonic] + " " + best_mode;
+        return std::string(NOTE_NAMES[best_tonic]) + " " + best_mode;
     }
 
-    std::string detectGenre(const MidiFile& midiFile, const std::vector<int>& notes, const std::vector<double>& durations) {
-        double tempo = midiFile.tempoChanges.empty() ? 0 : 60000000.0 / midiFile.tempoChanges[0].microsecondsPerQuarter;
+    [[nodiscard]] std::string detectGenre(const MidiFile& midiFile, const std::vector<int>& notes, const std::vector<double>& durations) const {
+    double tempo = midiFile.tempoChanges.empty() ? 0 : 60000000.0 / midiFile.tempoChanges[0].microsecondsPerQuarter;
         int timeSignatureNumerator = midiFile.timeSignatures.empty() ? 4 : midiFile.timeSignatures[0].numerator;
         int timeSignatureDenominator = midiFile.timeSignatures.empty() ? 4 : midiFile.timeSignatures[0].denominator;
 
@@ -168,8 +569,8 @@ public:
         return determineGenre(tempo, timeSignatureNumerator, instrumentDiversity, noteDensity, rhythmComplexity, pitchRange, syncopation, harmonicComplexity);
     }
 
-    int findBestTranspose(const std::vector<int>& notes, const std::vector<double>& durations, const std::string& detectedKey, const std::string& genre) {
-        const std::vector<int> transposeOptions = { -12, -11, -9, -7, -5, -4, -2, 0, 2, 4, 5, 7, 9, 11, 12 };
+    [[nodiscard]] int findBestTranspose(const std::vector<int>& notes, const std::vector<double>& durations, const std::string& detectedKey, const std::string& genre) const {
+    const std::vector<int> transposeOptions = { -12, -11, -9, -7, -5, -4, -2, 0, 2, 4, 5, 7, 9, 11, 12 };
         const std::map<std::string, int> keyToIndex = { {"C", 0}, {"C#", 1}, {"D", 2}, {"D#", 3}, {"E", 4}, {"F", 5}, {"F#", 6}, {"G", 7}, {"G#", 8}, {"A", 9}, {"A#", 10}, {"B", 11} };
 
         auto keyPos = detectedKey.find(" ");
@@ -230,12 +631,12 @@ public:
         return bestTranspose;
     }
 
-    int getKeySignatureComplexity(int keyIndex) {
-        const std::vector<int> complexityLookup = { 0, 5, 2, 7, 4, 1, 6, 3, 8, 5, 2, 7 };
+    [[nodiscard]] int getKeySignatureComplexity(int keyIndex) const {
+    const std::vector<int> complexityLookup = { 0, 5, 2, 7, 4, 1, 6, 3, 8, 5, 2, 7 };
         return complexityLookup[keyIndex];
     }
-    double calculateIntervalComplexity(const std::vector<int>& notes, int transpose) {
-        std::vector<int> intervals;
+    [[nodiscard]] double calculateIntervalComplexity(const std::vector<int>& notes, int transpose) const {
+    std::vector<int> intervals;
         for (size_t i = 1; i < notes.size(); ++i) {
             intervals.push_back(std::abs((notes[i] + transpose) - (notes[i - 1] + transpose)));
         }
@@ -260,8 +661,8 @@ public:
 
         return complexity;
     }
-    std::pair<std::vector<int>, std::vector<double>> extractNotesAndDurations(const MidiFile& midiFile) {
-        std::vector<int> notes;
+    [[nodiscard]] std::pair<std::vector<int>, std::vector<double>> extractNotesAndDurations(const MidiFile& midiFile) const {
+    std::vector<int> notes;
         std::vector<double> durations;
 
         for (const auto& track : midiFile.tracks) {
@@ -299,12 +700,8 @@ public:
         return { notes, durations };
     }
 private:
-    int getPitchClass(int midiNote) {
-        return midiNote % 12;
-    }
-
-    void keySpecialCases(const std::vector<double>& pitch_class_weighted, int& best_tonic, std::string& best_mode) {
-        if (best_tonic == 7) {  // G
+    void keySpecialCases(const std::vector<double>& pitch_class_weighted, int& best_tonic, std::string& best_mode) const{
+    if (best_tonic == 7) {  // G
             double f_natural = pitch_class_weighted[5];  // F
             double f_sharp = pitch_class_weighted[6];    // F#
             if (f_sharp > f_natural * 1.2) {
@@ -328,8 +725,8 @@ private:
         }
     }
 
-    int calculateInstrumentDiversity(const MidiFile& midiFile) {
-        std::set<uint8_t> uniqueInstruments;
+    [[nodiscard]] int calculateInstrumentDiversity(const MidiFile& midiFile) const {
+    std::set<uint8_t> uniqueInstruments;
         for (const auto& track : midiFile.tracks) {
             for (const auto& event : track.events) {
                 if ((event.status & 0xF0) == 0xC0) {  
@@ -339,8 +736,8 @@ private:
         }
         return uniqueInstruments.size();
     }
-    double calculateRhythmComplexity(const std::vector<double>& durations) {
-        if (durations.size() <= 1) {
+    [[nodiscard]] double calculateRhythmComplexity(const std::vector<double>& durations) const {
+    if (durations.size() <= 1) {
             return 1.0;
         }
 
@@ -368,8 +765,8 @@ private:
     }
 
 
-    double calculateSyncopation(const std::vector<double>& durations, size_t noteCount) {
-        double syncopation = 0.0;
+    [[nodiscard]] double calculateSyncopation(const std::vector<double>& durations, size_t noteCount) const {
+    double syncopation = 0.0;
         for (const auto& duration : durations) {
             double beatPosition = std::fmod(duration, 1.0);
             if (beatPosition > 0.25 && beatPosition < 0.75) {
@@ -379,8 +776,8 @@ private:
         return noteCount == 0 ? 0 : syncopation / noteCount;
     }
 
-    double calculateHarmonicComplexity(const std::vector<int>& notes, const std::vector<double>& durations) {
-        auto chordProgression = analyzeChordProgression(notes, durations);
+    [[nodiscard]] double calculateHarmonicComplexity(const std::vector<int>& notes, const std::vector<double>& durations) const {
+    auto chordProgression = analyzeChordProgression(notes, durations);
         std::set<std::string> uniqueChords;
         for (const auto& [chord, _] : chordProgression) {
             uniqueChords.insert(chord);
@@ -388,8 +785,8 @@ private:
         return chordProgression.empty() ? 0 : static_cast<double>(uniqueChords.size()) / chordProgression.size();
     }
 
-    std::string determineGenre(double tempo, int timeSignatureNumerator, int instrumentDiversity, double noteDensity, double rhythmComplexity, double pitchRange, double syncopation, double harmonicComplexity) {
-        if (tempo >= 60 && tempo <= 80 && timeSignatureNumerator == 4 && pitchRange >= 48 && harmonicComplexity > 0.6) {
+    [[nodiscard]] std::string determineGenre(double tempo, int timeSignatureNumerator, int instrumentDiversity, double noteDensity, double rhythmComplexity, double pitchRange, double syncopation, double harmonicComplexity) const {
+    if (tempo >= 60 && tempo <= 80 && timeSignatureNumerator == 4 && pitchRange >= 48 && harmonicComplexity > 0.6) {
             if (harmonicComplexity > 0.8 && rhythmComplexity > 1.3) return "Romantic Piano";
             else if (harmonicComplexity > 0.7) return "Classical Piano";
             else return "Baroque Piano";
@@ -450,8 +847,8 @@ private:
         }
     }
 
-    std::string getChord(const std::set<int>& notes) {
-        std::vector<int> intervals;
+    [[nodiscard]] std::string getChord(const std::set<int>& notes) const {
+    std::vector<int> intervals;
         for (auto it = std::next(notes.begin()); it != notes.end(); ++it) {
             intervals.push_back((*it - *notes.begin() + 12) % 12);
         }
@@ -585,8 +982,8 @@ private:
         return bestChord;
     }
 
-    std::vector<std::pair<std::string, double>> analyzeChordProgression(const std::vector<int>& notes, const std::vector<double>& durations) {
-        std::vector<std::pair<std::string, double>> progression;
+    [[nodiscard]] std::vector<std::pair<std::string, double>> analyzeChordProgression(const std::vector<int>& notes, const std::vector<double>& durations) const {
+    std::vector<std::pair<std::string, double>> progression;
         std::set<int> currentChord;
         double chordDuration = 0.0;
         const double chordThreshold = 0.25;
@@ -606,8 +1003,8 @@ private:
         return progression;
     }
 
-    double calculateCorrelation(const std::vector<double>& v1, const std::vector<double>& v2) {
-        double mean_v1 = std::accumulate(v1.begin(), v1.end(), 0.0) / v1.size();
+    [[nodiscard]] double calculateCorrelation(const std::vector<double>& v1, const std::vector<double>& v2) const {
+    double mean_v1 = std::accumulate(v1.begin(), v1.end(), 0.0) / v1.size();
         double mean_v2 = std::accumulate(v2.begin(), v2.end(), 0.0) / v2.size();
 
         double numerator = 0.0;
@@ -624,8 +1021,8 @@ private:
     }
 
 
-    double calculateGenreSpecificScore(int newKeyIndex, int keySignatureComplexity, const std::vector<std::pair<std::string, double>>& chordProgression, const std::string& genre, int transpose) {
-        double score = 0.0;
+    [[nodiscard]] double calculateGenreSpecificScore(int newKeyIndex, int keySignatureComplexity, const std::vector<std::pair<std::string, double>>& chordProgression, const std::string& genre, int transpose) const {
+    double score = 0.0;
 
         std::vector<int> commonClassicalKeys = { 0, 2, 4, 5, 7, 9, 11 };
         std::vector<int> commonRomanticKeys = { 0, 4, 5, 7, 11 };
@@ -855,8 +1252,8 @@ private:
         return score;
     }
 
-    double calculateNoteDistributionEntropy(const std::vector<int>& notes, int transpose) const {
-        std::vector<int> noteDistribution(12, 0);
+    [[nodiscard]] double calculateNoteDistributionEntropy(const std::vector<int>& notes, int transpose) const {
+    std::vector<int> noteDistribution(12, 0);
         for (int note : notes) {
             noteDistribution[(note + transpose) % 12]++;
         }
@@ -871,8 +1268,8 @@ private:
 
         return entropy * 5.0;
     }
-    double calculatePlayabilityScore(int newKeyIndex, int transpose) {
-        double score = 0.0;
+    [[nodiscard]] double calculatePlayabilityScore(int newKeyIndex, int transpose) const {
+    double score = 0.0;
         std::vector<int> easyKeys = { 0, 7, 5, 2, 9, 4 }; // C, G, F, D, A, E
         if (std::find(easyKeys.begin(), easyKeys.end(), newKeyIndex) != easyKeys.end()) {
             score += 15.0;
@@ -888,8 +1285,8 @@ private:
         return score;
     }
     // staying up till 4am fine tuning this was def worth it..
-    double calculateHarmonicTension(const std::string& chord1, const std::string& chord2) {
-        const std::unordered_map<std::string, std::unordered_map<std::string, double>> tensionValues = {
+    [[nodiscard]] double calculateHarmonicTension(const std::string& chord1, const std::string& chord2) const {
+    const std::unordered_map<std::string, std::unordered_map<std::string, double>> tensionValues = {
             {"Major", {{"Major", 0.0}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.4}, {"Major 7th", 0.1}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.5}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.3}, {"9th", 0.4}, {"Minor 9th", 0.6}, {"Major 9th", 0.2}, {"11th", 0.5}, {"Minor 11th", 0.7}, {"Major 11th", 0.3}, {"13th", 0.5}, {"Minor 13th", 0.7}, {"Major 13th", 0.3}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.7}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
             {"Minor", {{"Major", 0.2}, {"Minor", 0.0}, {"Diminished", 0.3}, {"Augmented", 0.6}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.1}, {"Dominant 7th", 0.5}, {"Major 7th", 0.4}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.7}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.8}}},
             {"Diminished", {{"Major", 0.5}, {"Minor", 0.3}, {"Diminished", 0.0}, {"Augmented", 0.8}, {"Suspended 2nd", 0.6}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.6}, {"Major 7th", 0.5}, {"Diminished 7th", 0.1}, {"Minor Major 7th", 0.3}, {"6th", 0.7}, {"Minor 6th", 0.5}, {"Major Add 9", 0.6}, {"Minor Add 9", 0.3}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.8}, {"11th", 0.6}, {"Minor 11th", 0.4}, {"Major 11th", 0.9}, {"13th", 0.8}, {"Minor 13th", 0.5}, {"Major 13th", 0.9}, {"Dominant 9th", 0.7}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.8}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.7}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
@@ -974,7 +1371,7 @@ private:
 };
 class HighResolutionTimer {
 private: 
-    static constexpr uint64_t FREQUENCY = 1'000'000'000ULL; // 1ns res
+    static constexpr uint64_t FREQUENCY = 1'000'000'000ULL;
     std::atomic<int64_t> offset{ 0 };
     std::atomic<uint64_t> start_time{ 0 };
     const double frequency_multiplier;
@@ -993,16 +1390,32 @@ public:
         QueryPerformanceCounter(&li);
         return std::chrono::nanoseconds(static_cast<int64_t>((li.QuadPart - start_time.load(std::memory_order_relaxed)) * frequency_multiplier) + offset.load(std::memory_order_relaxed));
     }
-
     void sleep_until(std::chrono::nanoseconds target_time) noexcept {
+        constexpr std::chrono::nanoseconds SLEEP_DURATION(1000);
+        constexpr std::chrono::nanoseconds YIELD_THRESHOLD(100000);
+
         while (elapsed() < target_time) {
-            _mm_pause();
-            if (target_time - elapsed() > std::chrono::milliseconds(1)) {
+            auto remaining = target_time - elapsed();
+
+            if (remaining > YIELD_THRESHOLD) {
                 std::this_thread::yield();
             }
+            else if (remaining > SLEEP_DURATION * 5) {
+                std::this_thread::sleep_for(SLEEP_DURATION);
+            }
+            else if (remaining > SLEEP_DURATION) {
+                std::this_thread::sleep_for(SLEEP_DURATION / 10); 
+            }
+            else {
+                for (int i = 0; i < 100; ++i) { 
+                    _mm_pause();
+                }
+            }
+        }
+        while (elapsed() < target_time) {
+            _mm_pause();
         }
     }
-
     void adjust(std::chrono::nanoseconds adjustment) noexcept {
         offset.fetch_add(adjustment.count(), std::memory_order_relaxed);
     }
@@ -1019,8 +1432,7 @@ private:
 };
 class alignas(64) NoteEventPool {
 private:
-    static constexpr size_t BLOCK_SIZE = 1024 * 1024; // 1MB blocks 
-    static constexpr size_t CACHE_LINE_SIZE = 64; // now watch someone come to me with a pentium cpu or some fucking amd athlon
+    static constexpr size_t BLOCK_SIZE = 1024 * 1024; 
 
     struct alignas(CACHE_LINE_SIZE) Block {
         char data[BLOCK_SIZE];
@@ -1131,13 +1543,13 @@ public:
                 std::chrono::duration<double>(sleep_duration) * adjustment_factor
             );
             last_sleep_time.store(adjusted_sleep_duration);
-            auto sleep_threshold = std::chrono::microseconds(10);
+            auto sleep_threshold = std::chrono::microseconds(50);
             if (adjusted_sleep_duration > sleep_threshold) {
                 timer.sleep_until(current_time + adjusted_sleep_duration - sleep_threshold);
             }
             while (elapsed() < target_time) {
-                _mm_pause();
-            }
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            } 
         }
     }
 
@@ -1152,11 +1564,13 @@ class VirtualPianoPlayer {
     AdaptiveTimer adaptive_timer;
     HighResolutionTimer timer;
     NoteEventPool event_pool;
-
+    WORD sustain_key_code;
+    WORD volume_up_key_code;
+    WORD volume_down_key_code;
     std::array<int, 128> volume_lookup;
     std::array<int, 128> arrow_key_presses;
-    std::atomic<int> current_volume{ config.INITIAL_VOLUME };
-    std::atomic<int> max_volume{ config.DEFAULT_MAX_VOLUME };
+    std::atomic<int> current_volume{ config.volume.INITIAL_VOLUME };
+    std::atomic<int> max_volume{ config.volume.MAX_VOLUME };
     std::atomic<int> current_transpose{ 0 };
     std::atomic<bool> enable_transpose_adjustment{ false };
     std::atomic<bool> should_stop{ false };
@@ -1164,10 +1578,12 @@ class VirtualPianoPlayer {
     std::atomic<int> active_keys{ 0 };
     std::atomic<size_t> buffer_index{ 0 };
     std::atomic<bool> extendedModeActive{ false };
-    std::atomic<bool> paused;
+    std::atomic<bool> paused{ true };
     std::atomic<bool> enable_auto_transpose{ false };
     std::atomic<bool> eightyEightKeyModeActive{ false };
 
+
+    static constexpr std::array<const char*, 12> NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
     static constexpr size_t PREFETCH_DISTANCE = 2;
     static constexpr size_t CACHE_LINE_SIZE = 64;
 
@@ -1181,8 +1597,6 @@ class VirtualPianoPlayer {
     std::unique_ptr<std::thread> playback_thread;
     std::map<std::string, std::string> limited_key_mappings;
     std::map<std::string, std::string> full_key_mappings;
-    std::map<std::string, std::string> limited_extended_key_mappings;
-    std::map<std::string, std::string> full_extended_key_mappings;
     std::map<int, std::function<void()>> controls;
     std::thread listener_thread;
     std::mutex inputMutex;
@@ -1201,51 +1615,70 @@ class VirtualPianoPlayer {
     std::atomic<std::chrono::nanoseconds> rewind_target = Duration::zero();
     std::atomic<bool> use_adaptive = false;
     std::condition_variable skip_cv;
+    bool isSustainPressed = false;
+    std::atomic<bool> playback_started{ false };
+
 
 public:
-    VirtualPianoPlayer() noexcept : paused(true), last_adjustment_time(Clock::now()) {
+    VirtualPianoPlayer() noexcept
+        : last_adjustment_time(Clock::now()) {
         loadConfig();
         precompute_volume_adjustments();
         auto [limited, full] = define_key_mappings();
-        limited_key_mappings = limited;
-        full_key_mappings = full;
+        limited_key_mappings = std::move(limited);
+        full_key_mappings = std::move(full);
         controls = define_controls();
-        note_buffer.reserve(1 << 20);
+        note_buffer.reserve(1 << 20);  
+
+        sustain_key_code = stringToVK(config.hotkeys.SUSTAIN_KEY);
+        volume_up_key_code = vkToScanCode(stringToVK(config.hotkeys.VOLUME_UP_KEY));
+        volume_down_key_code = vkToScanCode(stringToVK(config.hotkeys.VOLUME_DOWN_KEY));
     }
+
 
     __forceinline Duration get_adjusted_time() const noexcept {
         auto now = Clock::now();
+        __assume(current_speed > 0);
+        if (!playback_started.load(std::memory_order_relaxed)) [[unlikely]]  {
+            return Duration::zero();
+        }
         return total_adjusted_time + skip_offset + std::chrono::duration_cast<Duration>((now - last_resume_time) * current_speed);
     }
 
     __forceinline void start_timer() noexcept {
-        if (use_adaptive_timer.load(std::memory_order_relaxed)) {
-            adaptive_timer.start();
+        if (!use_adaptive_timer.load(std::memory_order_relaxed)) [[likely]] {
+            timer.start();
         }
         else {
-            timer.start();
+            adaptive_timer.start();
         }
     }
 
     __forceinline void sleep_until(Duration target_time) noexcept {
-        if (use_adaptive_timer.load(std::memory_order_relaxed)) {
-            adaptive_timer.sleep_until(target_time);
+        if (!use_adaptive_timer.load(std::memory_order_relaxed)) [[likely]] {
+            timer.sleep_until(target_time);
         }
         else {
-            timer.sleep_until(target_time);
+            adaptive_timer.sleep_until(target_time);
         }
     }
 
     __forceinline Duration get_elapsed() const noexcept {
-        return use_adaptive_timer.load(std::memory_order_relaxed) ?
-            adaptive_timer.elapsed() : timer.elapsed();
+        return !use_adaptive_timer.load(std::memory_order_relaxed) ?
+            timer.elapsed() : adaptive_timer.elapsed();
     }
+
 
     __declspec(noinline) void play_notes() {
         prepare_event_queue();
         start_timer();
-        playback_start_time = std::chrono::steady_clock::now();
-        last_resume_time = playback_start_time;
+
+        if (!playback_started.load(std::memory_order_relaxed)) {
+            playback_start_time = std::chrono::steady_clock::now();
+            last_resume_time = playback_start_time;
+            playback_started.store(true, std::memory_order_relaxed);
+        }
+
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
         const size_t buffer_size = note_buffer.size();
@@ -1294,6 +1727,9 @@ public:
     }
 
     __forceinline size_t process_events(Duration adjusted_time, size_t buffer_index, size_t buffer_size) noexcept {
+        __assume(buffer_size >= buffer_index);
+        __assume(PREFETCH_DISTANCE > 0);
+        __assume(!note_buffer.empty());
         const size_t events_to_process = std::min(
             buffer_size - buffer_index,
             static_cast<size_t>(optimized_lower_bound(buffer_index, buffer_size, adjusted_time) - buffer_index)
@@ -1301,7 +1737,12 @@ public:
 
         for (size_t i = 0; i < events_to_process; ++i) {
             const auto& event = note_buffer[buffer_index + i];
-            execute_note_event(*event);
+            if (!event->isSustain) {
+                execute_note_event(*event);
+            }
+            else {
+                handle_sustain_event(*event);
+            }
             if (use_adaptive_timer.load(std::memory_order_relaxed)) {
                 adaptive_timer.adjust(event->time, adjusted_time);
             }
@@ -1314,6 +1755,7 @@ public:
     }
 
     __forceinline void handle_sleep(Duration adjusted_time, size_t buffer_index) noexcept {
+        __assume(buffer_index < note_buffer.size());
         const auto next_event_time = note_buffer[buffer_index]->time;
         auto sleep_duration = std::chrono::duration_cast<Duration>((next_event_time - adjusted_time) / current_speed);
         if (sleep_duration > Duration::zero()) {
@@ -1322,6 +1764,8 @@ public:
     }
 
     __forceinline size_t optimized_lower_bound(size_t start, size_t end, Duration target_time) const noexcept {
+        __assume(start <= end);
+        __assume(end <= note_buffer.size());
         while (start < end) {
             size_t mid = start + ((end - start) >> 1);
             if (note_buffer[mid]->time <= target_time) {
@@ -1335,37 +1779,56 @@ public:
     }
 
     void calibrate_volume() {
-        int steps_to_max = (config.DEFAULT_MAX_VOLUME - config.MIN_VOLUME) / config.VOLUME_STEP;
-        for (int i = 0; i < steps_to_max; ++i) {
-            arrowsend(0x4B, true);
+        int max_possible_steps = (config.volume.MAX_VOLUME - config.volume.MIN_VOLUME) / config.volume.VOLUME_STEP;
+        for (int i = 0; i < max_possible_steps; ++i) {
+            arrowsend(volume_down_key_code, true);
         }
-        int steps_to_initial = (config.INITIAL_VOLUME - config.MIN_VOLUME) / config.VOLUME_STEP;
-        for (int i = 0; i < steps_to_initial; ++i) {
-            arrowsend(0x4D, true);
-        }
-        current_volume.store(config.INITIAL_VOLUME);
-    }
 
+        // Then, increase to the initial volume
+        int steps_to_initial = (config.volume.INITIAL_VOLUME - config.volume.MIN_VOLUME) / config.volume.VOLUME_STEP;
+        for (int i = 0; i < steps_to_initial; ++i) {
+            arrowsend(volume_up_key_code, true);
+        }
+
+        current_volume.store(config.volume.INITIAL_VOLUME);
+    }
     void precompute_volume_adjustments() {
         for (int velocity = 0; velocity <= 127; ++velocity) {
             double weighted_avg_velocity = velocity;
             int target_volume = static_cast<int>((weighted_avg_velocity / 127) * max_volume.load());
-            target_volume = std::clamp(target_volume, config.MIN_VOLUME, max_volume.load());
+            target_volume = std::clamp(target_volume, config.volume.MIN_VOLUME, max_volume.load());
             target_volume = ((target_volume + 5) / 10) * 10;
             volume_lookup[velocity] = target_volume;
-            arrow_key_presses[velocity] = std::abs(config.INITIAL_VOLUME - target_volume) / config.VOLUME_STEP;
+            arrow_key_presses[velocity] = std::abs(config.volume.INITIAL_VOLUME - target_volume) / config.volume.VOLUME_STEP;
         }
     }
+
     void adjust_playback_speed(double factor) {
         std::unique_lock<std::mutex> lock(cv_m);
 
         auto now = std::chrono::steady_clock::now();
-        total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
-            (now - last_resume_time) * current_speed);
-        last_resume_time = now;
+
+        if (!playback_started.load(std::memory_order_relaxed)) {
+            playback_start_time = now;
+            last_resume_time = now;
+        }
+        else {
+            total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                (now - last_resume_time) * current_speed);
+            last_resume_time = now;
+        }
 
         current_speed *= factor;
-        current_speed = std::clamp(current_speed, 0.5, 2.0);
+        if (current_speed > 2.0) {
+            current_speed = 2.0;
+        }
+        else if (current_speed < 0.5) {
+            current_speed = 0.5;
+        }
+        if (fabs(current_speed - 1.0) < 0.05) {
+            current_speed = 1.0;
+        }
+
         setcolor(ConsoleColor::Blue);
         std::cout << "[SPEED] ";
         setcolor(ConsoleColor::White);
@@ -1375,14 +1838,14 @@ public:
         setcolor(ConsoleColor::White);
         cv.notify_all();
     }
-    void printCentered(const std::string& text, int consoleWidth) {
-        int padding = (consoleWidth - text.length()) / 2;
-        std::string spaces(padding, ' ');
-        std::cout << spaces << text << std::endl;
+
+    void printCentered(const std::string& text, int width) {
+        int padding = (width - text.size()) / 2;
+        std::string paddingSpaces(padding, ' ');
+        std::cout << paddingSpaces << text << std::endl;
     }
 
     void print_ascii_interface() {
-        
         system("cls");
 
         CONSOLE_SCREEN_BUFFER_INFO csbi;
@@ -1390,7 +1853,7 @@ public:
         GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
         consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
 
-        setcolor(ConsoleColor::Cyan);
+        setcolor(ConsoleColor::Blue);
         std::string ascii_art[] = {
             "  _____________________________________________________",
             " |  _________________________________________________  |",
@@ -1416,7 +1879,7 @@ public:
             printCentered(line, consoleWidth);
         }
 
-        setcolor(ConsoleColor::Blue);
+        setcolor(ConsoleColor::LightBlue);
         std::string credits[] = {
             "======================================================",
             "                      CREDITS                         ",
@@ -1436,7 +1899,7 @@ public:
             printCentered(line, consoleWidth);
         }
 
-        setcolor(ConsoleColor::Blue);
+        setcolor(ConsoleColor::LightBlue);
         std::string thanks[] = {
             "------------------------------------------------------",
             "   Thanks to everyone for their invaluable help and   ",
@@ -1449,10 +1912,9 @@ public:
 
         setcolor(ConsoleColor::Default);
         std::cout << "\n";
-        Sleep(1800);
+        Sleep(2200); // I spent too much time on this lmfao
         system("cls");
     }
-
     void main() {
         print_ascii_interface();
         setup_listener();
@@ -1494,71 +1956,158 @@ public:
         SendInput(inputCount, inputs, sizeof(INPUT));
     }
 
-private: //TODO: make shit configurable in the config
+private: 
     std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> define_key_mappings() {
-        std::map<std::string, std::string> limited_mappings = {
-            {"C2", "1"}, {"C#2", "!"}, {"D2", "2"}, {"D#2", "@"}, {"E2", "3"}, {"F2", "4"},
-            {"F#2", "$"}, {"G2", "5"}, {"G#2", "%"}, {"A2", "6"}, {"A#2", "^"}, {"B2", "7"},
-            {"C3", "8"}, {"C#3", "*"}, {"D3", "9"}, {"D#3", "("}, {"E3", "0"}, {"F3", "q"},
-            {"F#3", "Q"}, {"G3", "w"}, {"G#3", "W"}, {"A3", "e"}, {"A#3", "E"}, {"B3", "r"},
-            {"C4", "t"}, {"C#4", "T"}, {"D4", "y"}, {"D#4", "Y"}, {"E4", "u"}, {"F4", "i"},
-            {"F#4", "I"}, {"G4", "o"}, {"G#4", "O"}, {"A4", "p"}, {"A#4", "P"}, {"B4", "a"},
-            {"C5", "s"}, {"C#5", "S"}, {"D5", "d"}, {"D#5", "D"}, {"E5", "f"}, {"F5", "g"},
-            {"F#5", "G"}, {"G5", "h"}, {"G#5", "H"}, {"A5", "j"}, {"A#5", "J"}, {"B5", "k"},
-            {"C6", "l"}, {"C#6", "L"}, {"D6", "z"}, {"D#6", "Z"}, {"E6", "x"}, {"F6", "c"},
-            {"F#6", "C"}, {"G6", "v"}, {"G#6", "V"}, {"A6", "b"}, {"A#6", "B"}, {"B6", "n"},
-            {"C7", "m"}
+        return { config.key_mappings["LIMITED"], config.key_mappings["FULL"] };
+    }
+#include <Windows.h>
+#include <iostream>
+#include <string>
+#include <unordered_map>
+#include <algorithm>
+#include <cctype>
+
+    int stringToVK(const std::string& keyName) {
+        static const std::unordered_map<std::string, int> keyMap = {
+            {"LBUTTON", VK_LBUTTON}, {"RBUTTON", VK_RBUTTON}, {"CANCEL", VK_CANCEL},
+            {"MBUTTON", VK_MBUTTON}, {"XBUTTON1", VK_XBUTTON1}, {"XBUTTON2", VK_XBUTTON2},
+            {"BACK", VK_BACK}, {"TAB", VK_TAB}, {"CLEAR", VK_CLEAR}, {"RETURN", VK_RETURN},
+            {"SHIFT", VK_SHIFT}, {"CONTROL", VK_CONTROL}, {"MENU", VK_MENU}, {"PAUSE", VK_PAUSE},
+            {"CAPITAL", VK_CAPITAL}, {"KANA", VK_KANA}, {"HANGEUL", VK_HANGEUL}, {"HANGUL", VK_HANGUL},
+            {"JUNJA", VK_JUNJA}, {"FINAL", VK_FINAL}, {"HANJA", VK_HANJA}, {"KANJI", VK_KANJI},
+            {"ESCAPE", VK_ESCAPE}, {"CONVERT", VK_CONVERT}, {"NONCONVERT", VK_NONCONVERT},
+            {"ACCEPT", VK_ACCEPT}, {"MODECHANGE", VK_MODECHANGE}, {"SPACE", VK_SPACE},
+            {"PRIOR", VK_PRIOR}, {"NEXT", VK_NEXT}, {"END", VK_END}, {"HOME", VK_HOME},
+            {"LEFT", VK_LEFT}, {"UP", VK_UP}, {"RIGHT", VK_RIGHT}, {"DOWN", VK_DOWN},
+            {"SELECT", VK_SELECT}, {"PRINT", VK_PRINT}, {"EXECUTE", VK_EXECUTE},
+            {"SNAPSHOT", VK_SNAPSHOT}, {"INSERT", VK_INSERT}, {"DELETE", VK_DELETE},
+            {"HELP", VK_HELP}, {"LWIN", VK_LWIN}, {"RWIN", VK_RWIN}, {"APPS", VK_APPS},
+            {"SLEEP", VK_SLEEP}, {"NUMPAD0", VK_NUMPAD0}, {"NUMPAD1", VK_NUMPAD1},
+            {"NUMPAD2", VK_NUMPAD2}, {"NUMPAD3", VK_NUMPAD3}, {"NUMPAD4", VK_NUMPAD4},
+            {"NUMPAD5", VK_NUMPAD5}, {"NUMPAD6", VK_NUMPAD6}, {"NUMPAD7", VK_NUMPAD7},
+            {"NUMPAD8", VK_NUMPAD8}, {"NUMPAD9", VK_NUMPAD9}, {"MULTIPLY", VK_MULTIPLY},
+            {"ADD", VK_ADD}, {"SEPARATOR", VK_SEPARATOR}, {"SUBTRACT", VK_SUBTRACT},
+            {"DECIMAL", VK_DECIMAL}, {"DIVIDE", VK_DIVIDE}, {"F1", VK_F1}, {"F2", VK_F2},
+            {"F3", VK_F3}, {"F4", VK_F4}, {"F5", VK_F5}, {"F6", VK_F6}, {"F7", VK_F7},
+            {"F8", VK_F8}, {"F9", VK_F9}, {"F10", VK_F10}, {"F11", VK_F11}, {"F12", VK_F12},
+            {"F13", VK_F13}, {"F14", VK_F14}, {"F15", VK_F15}, {"F16", VK_F16}, {"F17", VK_F17},
+            {"F18", VK_F18}, {"F19", VK_F19}, {"F20", VK_F20}, {"F21", VK_F21}, {"F22", VK_F22},
+            {"F23", VK_F23}, {"F24", VK_F24}, {"NUMLOCK", VK_NUMLOCK}, {"SCROLL", VK_SCROLL},
+            {"LSHIFT", VK_LSHIFT}, {"RSHIFT", VK_RSHIFT}, {"LCONTROL", VK_LCONTROL},
+            {"RCONTROL", VK_RCONTROL}, {"LMENU", VK_LMENU}, {"RMENU", VK_RMENU},
+            {"BROWSER_BACK", VK_BROWSER_BACK}, {"BROWSER_FORWARD", VK_BROWSER_FORWARD},
+            {"BROWSER_REFRESH", VK_BROWSER_REFRESH}, {"BROWSER_STOP", VK_BROWSER_STOP},
+            {"BROWSER_SEARCH", VK_BROWSER_SEARCH}, {"BROWSER_FAVORITES", VK_BROWSER_FAVORITES},
+            {"BROWSER_HOME", VK_BROWSER_HOME}, {"VOLUME_MUTE", VK_VOLUME_MUTE},
+            {"VOLUME_DOWN", VK_VOLUME_DOWN}, {"VOLUME_UP", VK_VOLUME_UP},
+            {"MEDIA_NEXT_TRACK", VK_MEDIA_NEXT_TRACK}, {"MEDIA_PREV_TRACK", VK_MEDIA_PREV_TRACK},
+            {"MEDIA_STOP", VK_MEDIA_STOP}, {"MEDIA_PLAY_PAUSE", VK_MEDIA_PLAY_PAUSE},
+            {"LAUNCH_MAIL", VK_LAUNCH_MAIL}, {"LAUNCH_MEDIA_SELECT", VK_LAUNCH_MEDIA_SELECT},
+            {"LAUNCH_APP1", VK_LAUNCH_APP1}, {"LAUNCH_APP2", VK_LAUNCH_APP2},
+            {"OEM_1", VK_OEM_1}, {"OEM_PLUS", VK_OEM_PLUS}, {"OEM_COMMA", VK_OEM_COMMA},
+            {"OEM_MINUS", VK_OEM_MINUS}, {"OEM_PERIOD", VK_OEM_PERIOD}, {"OEM_2", VK_OEM_2},
+            {"OEM_3", VK_OEM_3}, {"OEM_4", VK_OEM_4}, {"OEM_5", VK_OEM_5}, {"OEM_6", VK_OEM_6},
+            {"OEM_7", VK_OEM_7}, {"OEM_8", VK_OEM_8}, {"OEM_102", VK_OEM_102},
+            {"PROCESSKEY", VK_PROCESSKEY}, {"PACKET", VK_PACKET}, {"ATTN", VK_ATTN},
+            {"CRSEL", VK_CRSEL}, {"EXSEL", VK_EXSEL}, {"EREOF", VK_EREOF}, {"PLAY", VK_PLAY},
+            {"ZOOM", VK_ZOOM}, {"NONAME", VK_NONAME}, {"PA1", VK_PA1}, {"OEM_CLEAR", VK_OEM_CLEAR},
+            // Add some common aliases
+            {"ENTER", VK_RETURN}, {"ESC", VK_ESCAPE}, {"PAGEUP", VK_PRIOR}, {"PAGEDOWN", VK_NEXT},
+            {"PGUP", VK_PRIOR}, {"PGDN", VK_NEXT}, {"PRTSC", VK_SNAPSHOT}, {"PRTSCR", VK_SNAPSHOT},
+            {"PRINTSCRN", VK_SNAPSHOT}, {"APPS", VK_APPS}, {"CTRL", VK_CONTROL}, {"ALT", VK_MENU},
+            {"DEL", VK_DELETE}, {"INS", VK_INSERT}, {"NUM", VK_NUMLOCK}, {"SCRLK", VK_SCROLL},
+            {"CAPSLOCK", VK_CAPITAL}, {"CAPS", VK_CAPITAL}, {"BREAK", VK_CANCEL},
         };
 
-        std::map<std::string, std::string> full_mappings = {
-            {"A0", "ctrl+1"}, {"A#0", "ctrl+2"}, {"B0", "ctrl+3"}, {"C1", "ctrl+4"}, {"C#1", "ctrl+5"},
-            {"D1", "ctrl+6"}, {"D#1", "ctrl+7"}, {"E1", "ctrl+8"}, {"F1", "ctrl+9"}, {"F#1", "ctrl+0"},
-            {"G1", "ctrl+q"}, {"G#1", "ctrl+w"}, {"A1", "ctrl+e"}, {"A#1", "ctrl+r"}, {"B1", "ctrl+t"},
+        std::string upperKey = keyName;
+        std::transform(upperKey.begin(), upperKey.end(), upperKey.begin(),
+            [](unsigned char c) { return std::toupper(c); });
 
-            {"C2", "1"}, {"C#2", "!"}, {"D2", "2"}, {"D#2", "@"}, {"E2", "3"}, {"F2", "4"},
-            {"F#2", "$"}, {"G2", "5"}, {"G#2", "%"}, {"A2", "6"}, {"A#2", "^"}, {"B2", "7"},
-            {"C3", "8"}, {"C#3", "*"}, {"D3", "9"}, {"D#3", "("}, {"E3", "0"}, {"F3", "q"},
-            {"F#3", "Q"}, {"G3", "w"}, {"G#3", "W"}, {"A3", "e"}, {"A#3", "E"}, {"B3", "r"},
-            {"C4", "t"}, {"C#4", "T"}, {"D4", "y"}, {"D#4", "Y"}, {"E4", "u"}, {"F4", "i"},
-            {"F#4", "I"}, {"G4", "o"}, {"G#4", "O"}, {"A4", "p"}, {"A#4", "P"}, {"B4", "a"},
-            {"C5", "s"}, {"C#5", "S"}, {"D5", "d"}, {"D#5", "D"}, {"E5", "f"}, {"F5", "g"},
-            {"F#5", "G"}, {"G5", "h"}, {"G#5", "H"}, {"A5", "j"}, {"A#5", "J"}, {"B5", "k"},
-            {"C6", "l"}, {"C#6", "L"}, {"D6", "z"}, {"D#6", "Z"}, {"E6", "x"}, {"F6", "c"},
-            {"F#6", "C"}, {"G6", "v"}, {"G#6", "V"}, {"A6", "b"}, {"A#6", "B"}, {"B6", "n"},
+        std::cout << "Original keyName: " << keyName << ", Transformed to upperKey: " << upperKey << std::endl;
 
-            {"C7", "m"}, {"C#7", "ctrl+y"}, {"D7", "ctrl+u"}, {"D#7", "ctrl+i"}, {"E7", "ctrl+o"},
-            {"F7", "ctrl+p"}, {"F#7", "ctrl+a"}, {"G7", "ctrl+s"}, {"G#7", "ctrl+d"}, {"A7", "ctrl+f"},
-            {"A#7", "ctrl+g"}, {"B7", "ctrl+h"}, {"C8", "ctrl+j"}
-        };
+        // Remove "VK_" or "VK" prefix if present
+        if (upperKey.substr(0, 3) == "VK_" || upperKey.substr(0, 2) == "VK") {
+            upperKey = upperKey.substr(upperKey[2] == '_' ? 3 : 2);
+            std::cout << "Stripped 'VK' prefix, new upperKey: " << upperKey << std::endl;
+        }
 
-        return { limited_mappings, full_mappings };
+        auto it = keyMap.find(upperKey);
+        if (it != keyMap.end()) {
+            std::cout << "Found key in keyMap: " << upperKey << " -> " << it->second << std::endl;
+            return it->second;
+        }
+
+        // Handle single character keys
+        if (upperKey.length() == 1) {
+            char ch = upperKey[0];
+            if (std::isalnum(static_cast<unsigned char>(ch))) {
+                SHORT vk = VkKeyScanA(ch);
+                if (vk != -1) {
+                    int virtualKeyCode = vk & 0xFF;
+                    std::cout << "Mapped single character to virtual key code: " << virtualKeyCode << std::endl;
+                    return virtualKeyCode;
+                }
+            }
+        }
+
+        // Fallback: try to interpret as a direct virtual key code
+        try {
+            int vkCode = std::stoi(upperKey);
+            if (vkCode >= 0 && vkCode <= 255) {
+                std::cout << "Interpreted as direct virtual key code: " << vkCode << std::endl;
+                return vkCode;
+            }
+        }
+        catch (const std::exception&) {
+            // Ignore conversion errors
+        }
+
+        std::cout << "Key not found: " << upperKey << std::endl;
+        return 0;
+    }
+
+    WORD vkToScanCode(int vk) {
+        return static_cast<WORD>(MapVirtualKey(vk, MAPVK_VK_TO_VSC));
     }
 
     std::map<int, std::function<void()>> define_controls() {
-        return {
-            {VK_DELETE, [this]() { toggle_play_pause(); }},
-            {VK_HOME, [this]() { rewind(std::chrono::seconds(10)); }},
-            {VK_END, [this]() { skip(std::chrono::seconds(10)); }},
-            {VK_PRIOR, [this]() { speed_up(); }},
-            {VK_NEXT, [this]() { slow_down(); }},
-            {VK_F5, [this]() { load_new_song(); }},
-            {VK_F6, [this]() { toggle_88_key_mode(); }},
-            {VK_ESCAPE, [this]() { stop_and_exit(); }},
-            {VK_F7, [this]() { toggle_volume_adjustment(); }},
-            {VK_F8, [this]() { toggle_transpose_adjustment(); }},
-            {VK_F9, [this]() { toggle_adaptive_timer(); }},
-            {VK_F10, [this]() { toggleSustainMode(); } },
+        std::map<int, std::function<void()>> controls;
 
-        };
+        for (const auto& [action, key] : config.controls) {
+            int vk_code = stringToVK(key);
+            if (vk_code != 0) {
+                controls[vk_code] = [this, action]() {
+                    if (action == "PLAY_PAUSE") toggle_play_pause();
+                    else if (action == "REWIND") rewind(std::chrono::seconds(10));
+                    else if (action == "SKIP") skip(std::chrono::seconds(10));
+                    else if (action == "SPEED_UP") speed_up();
+                    else if (action == "SLOW_DOWN") slow_down();
+                    else if (action == "LOAD_NEW_SONG") load_new_song();
+                    else if (action == "TOGGLE_88_KEY_MODE") toggle_88_key_mode();
+                    else if (action == "TOGGLE_VOLUME_ADJUSTMENT") toggle_volume_adjustment();
+                    else if (action == "TOGGLE_TRANSPOSE_ADJUSTMENT") toggle_transpose_adjustment();
+                    else if (action == "TOGGLE_ADAPTIVE_TIMER") toggle_adaptive_timer();
+                    else if (action == "STOP_AND_EXIT") stop_and_exit();
+                    else if (action == "TOGGLE_SUSTAIN_MODE") toggleSustainMode();
+                    else std::cerr << "Unknown action: " << action << std::endl;
+                    };
+            }
+            else {
+                std::cerr << "Invalid key binding: " << key << " for action: " << action << std::endl;
+            }
+        }
+        return controls;
     }
     void clean_keyboard_state() {
-        //keyboard going ape shit lmfao
+        // keyboard gone ape shit emergency
         const int keys_to_reset[] = {
             VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
             VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
-            VK_MENU, VK_LMENU, VK_RMENU, 
+            VK_MENU, VK_LMENU, VK_RMENU,
             VK_LWIN, VK_RWIN,
+            'C', 'V', 'X' 
         };
+
         for (int vk = 0; vk < 256; ++vk) {
             if (GetAsyncKeyState(vk) & 0x8000) {
                 INPUT input = { 0 };
@@ -1569,19 +2118,21 @@ private: //TODO: make shit configurable in the config
             }
         }
         for (int vk : keys_to_reset) {
-            INPUT input = { 0 };
-            input.type = INPUT_KEYBOARD;
-            input.ki.wVk = vk;
-            input.ki.dwFlags = KEYEVENTF_KEYUP;
-            SendInput(1, &input, sizeof(INPUT));
-            input = { 0 };
-            input.type = INPUT_KEYBOARD;
-            input.ki.wScan = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
-            input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-            SendInput(1, &input, sizeof(INPUT));
+            INPUT input[2] = { 0 };
+            input[0].type = INPUT_KEYBOARD;
+            input[0].ki.wVk = vk;
+            input[1].type = INPUT_KEYBOARD;
+            input[1].ki.wVk = vk;
+            input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+
+            SendInput(2, input, sizeof(INPUT));
         }
         BYTE keyboard_state[256] = { 0 };
         SetKeyboardState(keyboard_state);
+        Sleep(50);
+        OpenClipboard(NULL);
+        EmptyClipboard();
+        CloseClipboard();
     }
     void stop_and_exit() {
         setcolor(ConsoleColor::Red);
@@ -1604,15 +2155,15 @@ private: //TODO: make shit configurable in the config
         std::exit(0);
     }
     void reset_volume() {
-        int volume_difference = config.INITIAL_VOLUME - current_volume.load(std::memory_order_relaxed);
-        int steps = std::abs(volume_difference) / config.VOLUME_STEP;
+        int volume_difference = config.volume.INITIAL_VOLUME - current_volume.load(std::memory_order_relaxed);
+        int steps = std::abs(volume_difference) / config.volume.VOLUME_STEP;
         WORD scan_code = (volume_difference > 0) ? 0x4D : 0x4B;
 
         for (int i = 0; i < steps; ++i) {
             arrowsend(scan_code, true);
         }
 
-        current_volume.store(config.INITIAL_VOLUME, std::memory_order_relaxed);
+        current_volume.store(config.volume.INITIAL_VOLUME, std::memory_order_relaxed);
     }
     void toggle_adaptive_timer() {
         bool adaptpause = paused.load();
@@ -1680,7 +2231,7 @@ private: //TODO: make shit configurable in the config
             setcolor(ConsoleColor::Blue);
             std::cout << "[SUSTAIN] ";
             setcolor(ConsoleColor::White);
-            std::cout << "DOWN (Press on sustain events)" << " with cut off velocity set to: " << config.SUSTAIN_CUTOFF << std::endl;
+            std::cout << "DOWN (Press on sustain events)" << " with cut off velocity set to: " << config.sustain.SUSTAIN_CUTOFF << std::endl;
 
             break;
         case SustainMode::SPACE_DOWN:
@@ -1688,7 +2239,7 @@ private: //TODO: make shit configurable in the config
             setcolor(ConsoleColor::Blue);
             std::cout << "[SUSTAIN] ";
             setcolor(ConsoleColor::White);
-            std::cout << "UP (Release on sustain events)" << " with cut off velocity set to: " << config.SUSTAIN_CUTOFF << std::endl;
+            std::cout << "UP (Release on sustain events)" << " with cut off velocity set to: " << config.sustain.SUSTAIN_CUTOFF << std::endl;
             break;
         case SustainMode::SPACE_UP:
             currentSustainMode = SustainMode::IG;
@@ -1706,7 +2257,14 @@ private: //TODO: make shit configurable in the config
         auto now = std::chrono::steady_clock::now();
 
         if (was_paused) {
-            last_resume_time = now;
+            if (!playback_started.load(std::memory_order_relaxed)) {
+                playback_start_time = now;
+                last_resume_time = now;
+                playback_started.store(true, std::memory_order_relaxed);
+            }
+            else {
+                last_resume_time = now;
+            }
 
             if (!playback_thread || !playback_thread->joinable()) {
                 playback_thread = std::make_unique<std::thread>(&VirtualPianoPlayer::play_notes, this);
@@ -1720,8 +2278,52 @@ private: //TODO: make shit configurable in the config
         cv.notify_all();
         std::cout << (was_paused ? "Resumed playback" : "Paused playback") << std::endl;
     }
+    void sendVirtualKey(WORD vk, bool is_press) {
+        INPUT input = { 0 };
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = vk;
+        input.ki.dwFlags = is_press ? 0 : KEYEVENTF_KEYUP;
+        input.ki.wScan = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
+        input.ki.time = 0;
+        input.ki.dwExtraInfo = 0;
+        SendInput(1, &input, sizeof(INPUT));
+    }
 
+    void pressKey(WORD vk) {
+        sendVirtualKey(vk, true);
+    }
 
+    void releaseKey(WORD vk) {
+        sendVirtualKey(vk, false);
+    }
+    void handle_sustain_event(const NoteEvent& event) {
+        bool pedal_on = event.sustainValue >= config.sustain.SUSTAIN_CUTOFF;
+
+        switch (currentSustainMode) {
+        case SustainMode::IG:
+            break;
+        case SustainMode::SPACE_DOWN:
+            if (pedal_on && !isSustainPressed) {
+                pressKey(sustain_key_code);
+                isSustainPressed = true;
+            }
+            else if (!pedal_on && isSustainPressed) {
+                releaseKey(sustain_key_code);
+                isSustainPressed = false;
+            }
+            break;
+        case SustainMode::SPACE_UP:
+            if (!pedal_on && isSustainPressed) {
+                releaseKey(sustain_key_code);
+                isSustainPressed = false;
+            }
+            else if (pedal_on && !isSustainPressed) {
+                pressKey(sustain_key_code);
+                isSustainPressed = true;
+            }
+            break;
+        }
+    }
     void prepare_event_queue() {
         std::lock_guard<std::mutex> lock(buffer_mutex);
         note_buffer.clear();
@@ -1731,10 +2333,12 @@ private: //TODO: make shit configurable in the config
             auto time_ns = std::chrono::nanoseconds(static_cast<long long>(std::get<0>(event) * 1e9));
             std::string note_or_control = std::get<1>(event);
             bool isPress = std::get<2>(event) == "press";
-            int velocity = std::get<3>(event);
+            int velocity_or_sustain = std::get<3>(event);
             bool isSustain = (note_or_control == "sustain");
+            int sustainValue = isSustain ? (velocity_or_sustain & 0xFF) : 0;
+            int velocity = isSustain ? 0 : velocity_or_sustain;
 
-            note_buffer.push_back(event_pool.allocate(time_ns, note_or_control, isPress, velocity, isSustain));
+            note_buffer.push_back(event_pool.allocate(time_ns, note_or_control, isPress, velocity, isSustain, sustainValue));
         }
 
         std::sort(note_buffer.begin(), note_buffer.end(), [](const NoteEvent* a, const NoteEvent* b) {
@@ -1742,16 +2346,17 @@ private: //TODO: make shit configurable in the config
             });
     }
     inline void execute_note_event(const NoteEvent& event) noexcept {
-      if (event.isPress) {
-            if (enable_volume_adjustment.load(std::memory_order_relaxed)) {
-                AdjustVolumeBasedOnVelocity(event.velocity);
+            if (event.isPress) {
+                if (enable_volume_adjustment.load(std::memory_order_relaxed)) {
+                    AdjustVolumeBasedOnVelocity(event.velocity);
+                }
+                press_key(event.note, event.velocity);
             }
-            press_key(event.note, event.velocity);
-        }
-        else {
-            release_key(event.note);
-        }
-    }
+            else {
+                release_key(event.note);
+            }
+        }   
+    
   
     inline void press_key(const std::string& note, int velocity) noexcept {
         const std::string& key = eightyEightKeyModeActive ?
@@ -1783,17 +2388,11 @@ private: //TODO: make shit configurable in the config
     }
     void release_all_keys() {
         const auto& current_mappings = eightyEightKeyModeActive ? full_key_mappings : limited_key_mappings;
-        const auto& current_extended_mappings = eightyEightKeyModeActive ? full_extended_key_mappings : limited_extended_key_mappings;
 
         for (const auto& [note, key] : current_mappings) {
             KeyPress(key, false);
         }
 
-        if (extendedModeActive) {
-            for (const auto& [note, key] : current_extended_mappings) {
-                KeyPress(key, false);
-            }
-        }
         for (auto& [note, pressed] : pressed_keys) {
             pressed.store(false, std::memory_order_relaxed);
         }
@@ -1829,48 +2428,50 @@ private: //TODO: make shit configurable in the config
     setcolor(ConsoleColor::Blue);
     std::cout << "[SKIP] ";
     setcolor(ConsoleColor::White);
-    std::cout << "SKIPPED ";
+    std::cout << "Skipped by 10 sec\n";
     setcolor(ConsoleColor::White);
 
 }
 
-void rewind(std::chrono::seconds duration) {
-    std::unique_lock<std::mutex> lock(cv_m);
+   void rewind(std::chrono::seconds duration) {
+       std::unique_lock<std::mutex> lock(cv_m);
 
-    auto rewind_amount = std::chrono::duration_cast<std::chrono::nanoseconds>(duration * current_speed);
-    if (rewind_amount > total_adjusted_time + skip_offset) {
-        rewind_amount = total_adjusted_time + skip_offset;
-    }
+       auto rewind_amount = std::chrono::duration_cast<std::chrono::nanoseconds>(duration * current_speed);
+       if (rewind_amount > total_adjusted_time + skip_offset) {
+           rewind_amount = total_adjusted_time + skip_offset;
+       }
 
-    if (paused.load(std::memory_order_relaxed)) {
-        skip_offset -= rewind_amount;
-        total_adjusted_time = std::max(total_adjusted_time - rewind_amount, Duration::zero());
-    } else {
-        is_rewinding.store(true);
-        auto now = std::chrono::steady_clock::now();
-        total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
-            (now - last_resume_time) * current_speed);
+       if (paused.load(std::memory_order_relaxed)) {
+           skip_offset -= rewind_amount;
+           total_adjusted_time = std::max(total_adjusted_time - rewind_amount, Duration::zero());
+       }
+       else {
+           is_rewinding.store(true);
+           auto now = std::chrono::steady_clock::now();
+           total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
+               (now - last_resume_time) * current_speed);
 
-        skip_offset -= rewind_amount;
-        total_adjusted_time = std::max(total_adjusted_time - rewind_amount, Duration::zero());
-        last_resume_time = now;
+           skip_offset -= rewind_amount;
+           total_adjusted_time = std::max(total_adjusted_time - rewind_amount, Duration::zero());
+           last_resume_time = now;
 
-        release_all_keys();
-        cv.notify_all();
-        skip_cv.wait(lock, [this] { return !is_rewinding.load(); });
-    }
-    buffer_index = std::lower_bound(note_buffer.begin(), note_buffer.end(),
-        total_adjusted_time + skip_offset,
-        [](const auto& event, const Duration& time) {
-            return event->time < time;
-        }) - note_buffer.begin();
+           release_all_keys();
+           cv.notify_all();
+           skip_cv.wait(lock, [this] { return !is_rewinding.load(); });
+       }
 
-    setcolor(ConsoleColor::Blue);
-    std::cout << "[REWIND] ";
-    setcolor(ConsoleColor::White);
-    std::cout << "REWOUND ";
-    setcolor(ConsoleColor::White);
-}
+       buffer_index.store(std::lower_bound(note_buffer.begin(), note_buffer.end(),
+           total_adjusted_time + skip_offset,
+           [](const auto& event, const Duration& time) {
+               return event->time < time;
+           }) - note_buffer.begin(), std::memory_order_relaxed);
+
+       setcolor(ConsoleColor::Blue);
+       std::cout << "[REWIND] ";
+       setcolor(ConsoleColor::White);
+       std::cout << "Rewound " << duration.count() << " seconds\n";
+       setcolor(ConsoleColor::White);
+   } 
     void speed_up() {
         adjust_playback_speed(1.1);
     }
@@ -1890,14 +2491,14 @@ void rewind(std::chrono::seconds duration) {
     void toggle_volume_adjustment() {
         enable_volume_adjustment = !enable_volume_adjustment;
         if (enable_volume_adjustment) {
-            max_volume = config.DEFAULT_MAX_VOLUME;
+            max_volume = config.volume.MAX_VOLUME;
             precompute_volume_adjustments();
             calibrate_volume();
             setcolor(ConsoleColor::Blue);
             std::cout << "[AUTOVOL] ";
             setcolor(ConsoleColor::White);
             std::cout << "INITIAL VOLUME: ";
-            std::cout << config.INITIAL_VOLUME << "%" << " | VOLUME STEP: " << config.VOLUME_STEP << "%" << " | MAX VOLUME: " << config.DEFAULT_MAX_VOLUME << "%" << std::endl;
+            std::cout << config.volume.INITIAL_VOLUME << "%" << " | VOLUME STEP: " << config.volume.VOLUME_STEP << "%" << " | MAX VOLUME: " << config.volume.MAX_VOLUME << "%" << std::endl;
             setcolor(ConsoleColor::White);
         }
         else {
@@ -1995,7 +2596,7 @@ void rewind(std::chrono::seconds duration) {
 
                 if (playback_thread && playback_thread->joinable()) {
                     HANDLE thread_handle = playback_thread->native_handle();
-                    // im lazy ok
+                    // im lazy ok i clean it up after
                     TerminateThread(thread_handle, 0);
                     playback_thread->detach();
                     playback_thread.reset();
@@ -2013,7 +2614,7 @@ void rewind(std::chrono::seconds duration) {
                 prepare_event_queue();
                 playback_thread = std::make_unique<std::thread>(&VirtualPianoPlayer::play_notes, this);
                 cv.notify_all();
-
+                
             }
             catch (const std::exception& e) {
                 std::cerr << "Error parsing MIDI file: " << midi_file_path << std::endl;
@@ -2048,7 +2649,26 @@ void rewind(std::chrono::seconds duration) {
     std::wstring sanitizeFileName(const std::wstring& fileName) {
         std::wstring sanitized;
         for (wchar_t c : fileName) {
-            if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L'_' || c == L'-' || c == L'.' || c == L' ') {
+            if ((c >= L'a' && c <= L'z') ||
+                (c >= L'A' && c <= L'Z') ||
+                (c >= L'0' && c <= L'9') ||
+                c == L'_' || c == L'-' ||
+                c == L'.' || c == L' ' ||
+                c == L'(' || c == L')' ||
+                c == L'[' || c == L']' ||
+                c == L'{' || c == L'}' ||
+                c == L'@' || c == L'!' ||
+                c == L'#' || c == L'$' ||
+                c == L'%' || c == L'^' ||
+                c == L'&' || c == L'+' ||
+                c == L'=' || c == L',' ||
+                c == L'\'' || c == L'`' ||
+                c == L'~' || c == L';' ||
+                c == L':' || c == L'<' ||
+                c == L'>' || c == L'?' ||
+                c == L'/' || c == L'|' ||
+                c == L'\\' || c == L'\"' ||
+                c == L'*') {
                 sanitized += c;
             }
             else {
@@ -2116,7 +2736,7 @@ void rewind(std::chrono::seconds duration) {
         std::sort(midi_files.begin(), midi_files.end());
 
         const int width = 80;
-        const std::wstring title = L"MIDI File Selection (MIDI++ TEST VERSION)";
+        const std::wstring title = L"MIDI File Selection";
         const std::wstring separator(width, L'=');
 
         std::wcout << L"\n";
@@ -2235,24 +2855,41 @@ void rewind(std::chrono::seconds duration) {
 
         print_colored_line(center("Controls"), ConsoleColor::LightBlue);
         print_colored_line(separator, ConsoleColor::Cyan);
-
-        std::vector<std::pair<std::string, std::string>> controls = {
-            {"DEL", "Play/Pause"}, {"HOME", "Rewind"}, {"END", "Skip ahead"},
-            {"PAGE UP", "Speed up"}, {"PAGE DOWN", "Slow down"}, {"F5", "Load new song"},
-            {"F6", "Toggle 88 Key mode"}, {"F7", "Toggle Automatic Volume"},
-            {"F8", "Toggle Transpose Engine (Beta)"},{"F9", "Adaptive Timer (Beta)"}, {"ESC", "Stop and exit"},{"F10", "Toggle Sustain Mode (disabled)"}
+        std::unordered_map<std::string, std::string> hardcoded_descriptions = {
+    {"PLAY_PAUSE", "Play/Pause"},
+    {"REWIND", "Rewind"},
+    {"SKIP", "Skip ahead"},
+    {"SPEED_UP", "Speed up"},
+    {"SLOW_DOWN", "Slow down"},
+    {"LOAD_NEW_SONG", "Load new song"},
+    {"TOGGLE_88_KEY_MODE", "Toggle 88 Key mode"},
+    {"TOGGLE_VOLUME_ADJUSTMENT", "Toggle Automatic Volume"},
+    {"TOGGLE_TRANSPOSE_ADJUSTMENT", "Toggle Transpose Engine (Beta)"},
+    {"TOGGLE_ADAPTIVE_TIMER", "Adaptive Timer (Beta)"},
+    {"STOP_AND_EXIT", "Stop and exit"},
+    {"TOGGLE_SUSTAIN_MODE", "Toggle Sustain Mode"}
         };
+        std::vector<std::pair<std::string, std::string>> controls;
+        for (const auto& [action, key] : config.controls) {
+            std::string display_key = key;
+            if (key.substr(0, 3) == "VK_") {
+                display_key = key.substr(3);
+            }
+            controls.emplace_back(display_key, action);
+        }
 
         int col_width = width / 2 - 2;
         for (size_t i = 0; i < controls.size(); i += 2) {
             setcolor(ConsoleColor::White);
-            std::cout << "  " << std::setw(col_width) << std::left << controls[i].first + ": " + controls[i].second;
+            std::string desc1 = hardcoded_descriptions[controls[i].second];
+
+            std::cout << "  " << std::setw(col_width) << std::left << controls[i].first + ": " + desc1;
             if (i + 1 < controls.size()) {
-                std::cout << " | " << std::setw(col_width) << std::left << controls[i + 1].first + ": " + controls[i + 1].second;
+                std::string desc2 = hardcoded_descriptions[controls[i + 1].second];
+                std::cout << " | " << std::setw(col_width) << std::left << controls[i + 1].first + ": " + desc2;
             }
             std::cout << "\n";
         }
-
         std::cout << "\n";
         print_colored_line(separator, ConsoleColor::Cyan);
         print_colored_line(center("MIDI File Details"), ConsoleColor::Cyan);
@@ -2276,7 +2913,15 @@ void rewind(std::chrono::seconds duration) {
         print_detail("Tempo Changes", midi_file.tempoChanges.size());
         print_detail("Time Signatures", midi_file.timeSignatures.size());
         print_detail("Key Signatures", midi_file.keySignatures.size());
-
+        print_detail("Legit Mode", config.legit_mode.ENABLED ? "Enabled" : "Disabled");
+        if (config.legit_mode.ENABLED) {
+            print_detail("Timing Variation", std::to_string(config.legit_mode.TIMING_VARIATION * 100) + "%");
+            print_detail("Note Skip Chance", std::to_string(config.legit_mode.NOTE_SKIP_CHANCE * 100) + "%");
+            print_detail("Extra Delay Chance", std::to_string(config.legit_mode.EXTRA_DELAY_CHANCE * 100) + "%");
+            print_detail("Extra Delay Range",
+                std::to_string(config.legit_mode.EXTRA_DELAY_MIN) + "s - " +
+                std::to_string(config.legit_mode.EXTRA_DELAY_MAX) + "s");
+        }
         std::cout << "\n";
         print_colored_line(separator, ConsoleColor::Cyan);
         print_colored_line(center("Press [DELETE] to start playback"), ConsoleColor::White);
@@ -2285,7 +2930,7 @@ void rewind(std::chrono::seconds duration) {
         setcolor(ConsoleColor::Default);
     }
 
-    void process_tracks(const MidiFile& midi_file) { //TODO: legit mode sorcery
+    void process_tracks(const MidiFile& midi_file) {
         note_events.clear();
         tempo_changes.clear();
         timeSignatures.clear();
@@ -2307,6 +2952,7 @@ void rewind(std::chrono::seconds duration) {
         int note_on_events = 0;
         int note_off_events = 0;
         std::unordered_map<int, int> notes_per_channel;
+
         for (const auto& track : midi_file.tracks) {
             for (const auto& event : track.events) {
                 all_events.emplace_back(event.absoluteTick, event);
@@ -2317,8 +2963,20 @@ void rewind(std::chrono::seconds duration) {
 
         std::unordered_map<int, std::unordered_map<int, std::pair<double, int>>> active_notes;
 
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<> timing_variation(1.0 - config.legit_mode.TIMING_VARIATION, 1.0 + config.legit_mode.TIMING_VARIATION);
+        std::uniform_real_distribution<> note_skip(0.0, 1.0);
+        std::uniform_real_distribution<> extra_delay(0.0, 1.0);
+        std::uniform_real_distribution<> extra_delay_amount(config.legit_mode.EXTRA_DELAY_MIN, config.legit_mode.EXTRA_DELAY_MAX);
+
         for (const auto& [tick, event] : all_events) {
             double elapsed_time = tick2second(tick - last_tick, ticks_per_beat, tempo);
+
+            if (config.legit_mode.ENABLED) {
+                elapsed_time *= timing_variation(gen);
+            }
+
             current_time += elapsed_time;
             last_tick = event.absoluteTick;
 
@@ -2326,7 +2984,7 @@ void rewind(std::chrono::seconds duration) {
                 tempo = (event.metaData[0] << 16) | (event.metaData[1] << 8) | event.metaData[2];
                 tempo_changes.push_back({ tick, tempo });
             }
-            else if (event.status == 0xFF && event.data1 == 0x58 && event.metaData.size() == 4) { //Useless
+            else if (event.status == 0xFF && event.data1 == 0x58 && event.metaData.size() == 4) {
                 current_numerator = event.metaData[0];
                 current_denominator = static_cast<uint8_t>(1 << event.metaData[1]);
                 timeSignatures.push_back(TimeSignature{
@@ -2339,23 +2997,33 @@ void rewind(std::chrono::seconds duration) {
             }
             else if ((event.status & 0xF0) == 0xB0 && event.data1 == 64) {
                 int channel = event.status & 0x0F;
-                bool pedal_on = event.data2 >= config.SUSTAIN_CUTOFF;
-                int velocity = event.data2;
-                sustain_pedal_state[channel] = pedal_on;
-                add_sustain_event(current_time, channel, pedal_on, velocity);
+                int sustainValue = event.data2;
+                add_sustain_event(current_time, channel, sustainValue);
             }
             else if ((event.status & 0xF0) == 0x90 || (event.status & 0xF0) == 0x80) {
                 int note = event.data1;
                 int channel = event.status & 0x0F;
                 int velocity = event.data2;
                 std::string note_name = get_note_name(note);
+
+                if (config.legit_mode.ENABLED) {
+                    if (note_skip(gen) < config.legit_mode.NOTE_SKIP_CHANCE) {
+                        continue;  // Skip this note
+                    }
+
+                    if (extra_delay(gen) < config.legit_mode.EXTRA_DELAY_CHANCE) {
+                        double delay = extra_delay_amount(gen);
+                        current_time += delay;
+                    }
+                }
+
                 if (first_musical_event_time < 0) {
                     first_musical_event_time = current_time;
                 }
                 last_musical_event_time = current_time;
 
                 if ((event.status & 0xF0) == 0x90 && velocity > 0) {
-                    // this is Note on
+                    // Note on
                     note_on_events++;
                     notes_per_channel[channel]++;
                     if (active_notes[channel].find(note) != active_notes[channel].end()) {
@@ -2371,7 +3039,7 @@ void rewind(std::chrono::seconds duration) {
                     add_note_event(current_time, note_name, "press", velocity);
                 }
                 else if ((event.status & 0xF0) == 0x80 || ((event.status & 0xF0) == 0x90 && velocity == 0)) {
-                    // this is Note off 
+                    // Note off 
                     note_off_events++;
                     auto it = active_notes[channel].find(note);
                     if (it != active_notes[channel].end()) {
@@ -2389,6 +3057,7 @@ void rewind(std::chrono::seconds duration) {
                 }
             }
         }
+
         for (const auto& [channel, notes] : active_notes) {
             for (const auto& [note, note_info] : notes) {
                 std::string note_name = get_note_name(note);
@@ -2396,10 +3065,9 @@ void rewind(std::chrono::seconds duration) {
                 note_off_events++;
             }
         }
+
         std::sort(note_events.begin(), note_events.end());
     }
-
- 
 #pragma float_control(precise, on)  
 __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, long double tempo) noexcept {
         constexpr long double MICROS_PER_SECOND = 1000000.0L;
@@ -2415,26 +3083,29 @@ __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, l
         return std::string(NOTE_NAMES[note]) + std::to_string(octave);
     }
 
-    void add_sustain_event(double time, int channel, bool pedal_on, int velocity) {
-        note_events.push_back(std::make_tuple(time, "sustain", pedal_on ? "press" : "release", velocity | (channel << 8)));
+    void add_sustain_event(double time, int channel, int sustainValue) {
+        note_events.push_back(std::make_tuple(time, "sustain",
+            sustainValue >= config.sustain.SUSTAIN_CUTOFF ? "press" : "release",
+            sustainValue | (channel << 8)));
     }
+
     void add_note_event(double time, const std::string& note, const std::string& action, int velocity) {
         note_events.push_back({ time, note, action, velocity });
     }
-    inline void AdjustVolumeBasedOnVelocity(int velocity) noexcept {
-        static constexpr WORD LEFT_ARROW_SCAN_CODE = 0x4B; 
-        static constexpr WORD RIGHT_ARROW_SCAN_CODE = 0x4D;
-        static constexpr bool EXTENDED_KEY = true;
-
+  inline  void AdjustVolumeBasedOnVelocity(int velocity) noexcept {
+        if (velocity < 0 || velocity >= static_cast<int>(volume_lookup.size())) {
+            std::cerr << "error WTF32 report to dev pls thanks" << std::endl;
+            return;
+        }
         int target_volume = volume_lookup[velocity];
         int volume_change = target_volume - current_volume.load(std::memory_order_relaxed);
 
-        if ((std::abs(volume_change) >= config.VOLUME_STEP)) {
-            WORD scan_code = volume_change > 0 ? RIGHT_ARROW_SCAN_CODE : LEFT_ARROW_SCAN_CODE;
-            int steps = std::abs(volume_change) / config.VOLUME_STEP;
+        if (std::abs(volume_change) >= config.volume.VOLUME_STEP) {
+            WORD scan_code = volume_change > 0 ? volume_up_key_code : volume_down_key_code;
+            int steps = std::abs(volume_change) / config.volume.VOLUME_STEP;
 
             for (int i = 0; i < steps; ++i) {
-                arrowsend(scan_code, EXTENDED_KEY);
+                arrowsend(scan_code, true);
             }
 
             current_volume.store(target_volume, std::memory_order_relaxed);
@@ -2444,6 +3115,7 @@ __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, l
 };
 
 int main() {
+    SetConsoleTitle(L"MIDI++ v1.0.0");
     VirtualPianoPlayer player;
     player.main();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

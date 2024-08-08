@@ -1368,16 +1368,28 @@ private:
 
         return 1.0;
     }
-};
+}; 
+
 class HighResolutionTimer {
-private: 
+private:
     static constexpr uint64_t FREQUENCY = 1'000'000'000ULL;
     std::atomic<int64_t> offset{ 0 };
     std::atomic<uint64_t> start_time{ 0 };
     const double frequency_multiplier;
+    std::atomic<int64_t> average_overshoot{ 1000 }; 
+    static constexpr int BUFFER_SIZE = 4; 
+    std::array<std::atomic<int64_t>, BUFFER_SIZE> overshoot_buffer;
+    std::atomic<int> buffer_index{ 0 };
+    static constexpr int CALIBRATION_ROUNDS = 10;
 
 public:
-    HighResolutionTimer() : frequency_multiplier(static_cast<double>(FREQUENCY) / static_cast<double>(performanceFrequency())) {}
+    HighResolutionTimer() :
+        frequency_multiplier(static_cast<double>(FREQUENCY) / static_cast<double>(performanceFrequency())) {
+        for (auto& a : overshoot_buffer) {
+            a.store(0, std::memory_order_relaxed);
+        }
+        calibrate();
+    }
 
     void start() noexcept {
         LARGE_INTEGER li;
@@ -1390,44 +1402,58 @@ public:
         QueryPerformanceCounter(&li);
         return std::chrono::nanoseconds(static_cast<int64_t>((li.QuadPart - start_time.load(std::memory_order_relaxed)) * frequency_multiplier) + offset.load(std::memory_order_relaxed));
     }
+
     void sleep_until(std::chrono::nanoseconds target_time) noexcept {
-        constexpr std::chrono::nanoseconds SLEEP_DURATION(1000);
-        constexpr std::chrono::nanoseconds YIELD_THRESHOLD(100000);
+        constexpr std::chrono::nanoseconds SPIN_THRESHOLD(10000); 
 
-        while (elapsed() < target_time) {
-            auto remaining = target_time - elapsed();
+        auto current_time = elapsed();
+        auto sleep_duration = target_time - current_time - std::chrono::nanoseconds(average_overshoot.load(std::memory_order_relaxed));
 
-            if (remaining > YIELD_THRESHOLD) {
-                std::this_thread::yield();
-            }
-            else if (remaining > SLEEP_DURATION * 5) {
-                std::this_thread::sleep_for(SLEEP_DURATION);
-            }
-            else if (remaining > SLEEP_DURATION) {
-                std::this_thread::sleep_for(SLEEP_DURATION / 10); 
-            }
-            else {
-                for (int i = 0; i < 100; ++i) { 
-                    _mm_pause();
-                }
-            }
+        if (sleep_duration > SPIN_THRESHOLD) {
+            std::this_thread::sleep_for(sleep_duration - SPIN_THRESHOLD);
         }
+
         while (elapsed() < target_time) {
             _mm_pause();
         }
+
+        auto actual_time = elapsed();
+        record_overshoot(actual_time - target_time);
     }
+
     void adjust(std::chrono::nanoseconds adjustment) noexcept {
         offset.fetch_add(adjustment.count(), std::memory_order_relaxed);
     }
 
 private:
     static uint64_t performanceFrequency() noexcept {
-        static uint64_t frequency = []() {
-            LARGE_INTEGER li;
-            QueryPerformanceFrequency(&li);
-            return li.QuadPart;
-            }();
-        return frequency;
+        LARGE_INTEGER li;
+        QueryPerformanceFrequency(&li);
+        return li.QuadPart;
+    }
+
+    void calibrate() noexcept {
+        for (int i = 0; i < CALIBRATION_ROUNDS; ++i) {
+            auto start = elapsed();
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            auto end = elapsed();
+            record_overshoot(end - start - std::chrono::microseconds(100));
+        }
+        update_average_overshoot();
+    }
+
+    void record_overshoot(std::chrono::nanoseconds overshoot) noexcept {
+        int index = buffer_index.fetch_add(1, std::memory_order_relaxed) % BUFFER_SIZE;
+        overshoot_buffer[index].store(overshoot.count(), std::memory_order_relaxed);
+        update_average_overshoot();
+    }
+
+    void update_average_overshoot() noexcept {
+        int64_t sum = 0;
+        for (const auto& a : overshoot_buffer) {
+            sum += a.load(std::memory_order_relaxed);
+        }
+        average_overshoot.store(sum / BUFFER_SIZE, std::memory_order_relaxed);
     }
 };
 class alignas(64) NoteEventPool {
@@ -1960,12 +1986,6 @@ private:
     std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> define_key_mappings() {
         return { config.key_mappings["LIMITED"], config.key_mappings["FULL"] };
     }
-#include <Windows.h>
-#include <iostream>
-#include <string>
-#include <unordered_map>
-#include <algorithm>
-#include <cctype>
 
     int stringToVK(const std::string& keyName) {
         static const std::unordered_map<std::string, int> keyMap = {
@@ -2011,7 +2031,6 @@ private:
             {"PROCESSKEY", VK_PROCESSKEY}, {"PACKET", VK_PACKET}, {"ATTN", VK_ATTN},
             {"CRSEL", VK_CRSEL}, {"EXSEL", VK_EXSEL}, {"EREOF", VK_EREOF}, {"PLAY", VK_PLAY},
             {"ZOOM", VK_ZOOM}, {"NONAME", VK_NONAME}, {"PA1", VK_PA1}, {"OEM_CLEAR", VK_OEM_CLEAR},
-            // Add some common aliases
             {"ENTER", VK_RETURN}, {"ESC", VK_ESCAPE}, {"PAGEUP", VK_PRIOR}, {"PAGEDOWN", VK_NEXT},
             {"PGUP", VK_PRIOR}, {"PGDN", VK_NEXT}, {"PRTSC", VK_SNAPSHOT}, {"PRTSCR", VK_SNAPSHOT},
             {"PRINTSCRN", VK_SNAPSHOT}, {"APPS", VK_APPS}, {"CTRL", VK_CONTROL}, {"ALT", VK_MENU},
@@ -2023,9 +2042,7 @@ private:
         std::transform(upperKey.begin(), upperKey.end(), upperKey.begin(),
             [](unsigned char c) { return std::toupper(c); });
 
-        std::cout << "Original keyName: " << keyName << ", Transformed to upperKey: " << upperKey << std::endl;
 
-        // Remove "VK_" or "VK" prefix if present
         if (upperKey.substr(0, 3) == "VK_" || upperKey.substr(0, 2) == "VK") {
             upperKey = upperKey.substr(upperKey[2] == '_' ? 3 : 2);
             std::cout << "Stripped 'VK' prefix, new upperKey: " << upperKey << std::endl;
@@ -2036,8 +2053,6 @@ private:
             std::cout << "Found key in keyMap: " << upperKey << " -> " << it->second << std::endl;
             return it->second;
         }
-
-        // Handle single character keys
         if (upperKey.length() == 1) {
             char ch = upperKey[0];
             if (std::isalnum(static_cast<unsigned char>(ch))) {
@@ -2049,8 +2064,6 @@ private:
                 }
             }
         }
-
-        // Fallback: try to interpret as a direct virtual key code
         try {
             int vkCode = std::stoi(upperKey);
             if (vkCode >= 0 && vkCode <= 255) {
@@ -2059,7 +2072,6 @@ private:
             }
         }
         catch (const std::exception&) {
-            // Ignore conversion errors
         }
 
         std::cout << "Key not found: " << upperKey << std::endl;

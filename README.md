@@ -5,17 +5,23 @@
 <meta property="og:title" content="MIDI++: The Ultimate Roblox Autoplayer and Piano Tool">
 <meta property="og:description" content="Automate your Roblox piano performances with MIDI++. Experience high-speed playback, intelligent features, and realistic sound. The ultimate tool for Roblox pianists.">)
 
+# MIDI++ for Roblox
+
 <div align="center">
 
 # MIDI++ for Roblox
+
+*Advanced MIDI Playback for Roblox Pianos*
 
 [![Release](https://img.shields.io/github/v/release/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github&color=blue)](https://github.com/Zephkek/MIDIPlusPlus/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 [![Stars](https://img.shields.io/github/stars/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/stargazers)
 [![Issues](https://img.shields.io/github/issues/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/issues)
 
-[![Download Now](https://img.shields.io/badge/Download%20Now-▼-brightgreen?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release)
+[![Download Now](https://img.shields.io/badge/Download%20Now-▼-brightgreen?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Zephkek/MIDIPlusPlus/releases/latest)
+[![Discord](https://img.shields.io/badge/Join%20Our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/AbC7De78)
 
+</div>
 *Advanced MIDI Playback for Roblox Pianos*
 
 </div>

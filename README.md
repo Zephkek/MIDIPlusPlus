@@ -117,23 +117,46 @@ The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON
     }
 }
 ```
-## Thanks
+## Acknowledgements
 
-Special thanks to:
-- Raven
-- Anger
-- Gene
+### Special Thanks
 
-Your contributions and support have been invaluable to the development of MIDI++.
+Special thanks to these cool individuals for their invaluable contributions and support:
 
-## External Libraries
+- **Raven**
+- **Anger**
+- **Gene**
 
-MIDI++ utilizes the following external libraries:
+Your dedication and expertise have been crucial to the development of MIDI++.
 
-- [moodycamel's Concurrent Queue](https://github.com/cameron314/concurrentqueue): A fast multi-producer, multi-consumer lock-free concurrent queue for C++11
-- [nlohmann's JSON for Modern C++](https://github.com/nlohmann/json): A JSON library for Modern C++
+### External Libraries
 
-We are grateful for these high-quality, open-source libraries that have significantly enhanced the functionality and performance of MIDI++.
+MIDI++ leverages the power of these outstanding open-source libraries:
+
+<table style="width: 100%; border-collapse: separate; border-spacing: 0 15px; font-family: Arial, sans-serif;">
+  <tr>
+    <th style="text-align: left; padding: 10px 15px; color: #2c3e50; font-size: 18px; font-weight: bold;">Library</th>
+    <th style="text-align: left; padding: 10px 15px; color: #2c3e50; font-size: 18px; font-weight: bold;">Description</th>
+  </tr>
+  <tr style="background-color: #f8f9fa; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+    <td style="padding: 20px; border-left: 4px solid #3498db; font-weight: bold;">
+      <a href="https://github.com/cameron314/concurrentqueue" style="color: #3498db; text-decoration: none; font-size: 16px;">moodycamel's Concurrent Queue</a>
+    </td>
+    <td style="padding: 20px; color: #34495e; font-size: 14px;">
+      A fast multi-producer, multi-consumer lock-free concurrent queue for C++11
+    </td>
+  </tr>
+  <tr style="background-color: #f8f9fa; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+    <td style="padding: 20px; border-left: 4px solid #3498db; font-weight: bold;">
+      <a href="https://github.com/nlohmann/json" style="color: #3498db; text-decoration: none; font-size: 16px;">nlohmann's JSON for Modern C++</a>
+    </td>
+    <td style="padding: 20px; color: #34495e; font-size: 14px;">
+      A JSON library for Modern C++
+    </td>
+  </tr>
+</table>
+
+These high-quality libraries have significantly enhanced MIDI++'s functionality and performance, Kudos to their creators.
 
 ## License
 

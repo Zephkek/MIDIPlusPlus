@@ -140,7 +140,7 @@ MIDI++ leverages the power of these outstanding open-source libraries:
   </tr>
   <tr style="background-color: #f8f9fa; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
     <td style="padding: 20px; border-left: 4px solid #3498db; font-weight: bold;">
-      <a href="https://github.com/cameron314/concurrentqueue" style="color: #3498db; text-decoration: none; font-size: 16px;">moodycamel's Concurrent Queue</a>
+      <a href="https://github.com/cameron314/concurrentqueue" style="color: #3498db; text-decoration: none; font-size: 16px;">moodycamel Concurrent Queue</a>
     </td>
     <td style="padding: 20px; color: #34495e; font-size: 14px;">
       A fast multi-producer, multi-consumer lock-free concurrent queue for C++11

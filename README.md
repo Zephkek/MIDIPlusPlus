@@ -74,7 +74,7 @@ The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON
 
 | Setting | Type | Description |
 |---------|------|-------------|
-| ENABLED | Boolean | • Activates/deactivates Authenticity Mode<br>• When true, all other settings become active |
+| ENABLED | Boolean | • Activates/deactivates Authenticity Mode<br>• When true, all other settings become active, and will load the MIDI file in legit mode |
 | TIMING_VARIATION | Float<br>(0.0 to 1.0) | • Introduces timing deviations to each note<br>• 0.1 means ±10% variation in note timing<br>• Example: A note at 1.000s might play between 0.900s and 1.100s |
 | NOTE_SKIP_CHANCE | Float<br>(0.0 to 1.0) | • Sets probability of missing a note<br>• 0.02 means 2% chance to skip any given note<br>• Simulates human errors in fast or complex passages |
 | EXTRA_DELAY_CHANCE | Float<br>(0.0 to 1.0) | • Likelihood of inserting a pause between notes<br>• 0.05 means 5% chance of adding delay after a note<br>• Mimics human hesitation or breaths |
@@ -103,7 +103,7 @@ The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON
 | MAX_VOLUME | 200 | • Maximum allowed volume level in your game<br>• Represents 200% of normal volume by default |
 | INITIAL_VOLUME | 100 | • Starting volume level on initialization<br>• Represents 100% or "normal" volume |
 | VOLUME_STEP | 10 | • Increment/decrement step for volume adjustments<br>• Each adjustment changes volume by 10 units by default |
-| ADJUSTMENT_INTERVAL_MS | 50 | • Minimum time between volume adjustments<br>• Prevents changes more frequent than every 50 milliseconds by defqult|
+| ADJUSTMENT_INTERVAL_MS | 50 | • Minimum time between volume adjustments<br>• Prevents changes more frequent than every 50 milliseconds by default|
 
 ## JSON Configuration
 

@@ -39,7 +39,7 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 ## Showcase:
 | [![CPU Usage and Stability](https://img.youtube.com/vi/gAQ-5ZlYjUQ/0.jpg)](https://www.youtube.com/watch?v=gAQ-5ZlYjUQ) | [![Features Showcase](https://img.youtube.com/vi/lyK05EK6e2A/0.jpg)](https://www.youtube.com/watch?v=lyK05EK6e2A) |
 |---|---|
-| CPU Usage and Stability | Features Showcase |
+| Video 1 | Video 2 |
 
 ## Installation
 

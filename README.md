@@ -2,7 +2,10 @@
 
 # MIDI++ for Roblox
 
-[LOGO PLACEHOLDER]
+[![Release](https://img.shields.io/github/v/release/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github&color=blue)](https://github.com/Zephkek/MIDIPlusPlus/releases)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![Stars](https://img.shields.io/github/stars/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/stargazers)
+[![Issues](https://img.shields.io/github/issues/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/issues)
 
 *Advanced MIDI Playback for Roblox Pianos*
 

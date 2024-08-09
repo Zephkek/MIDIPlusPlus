@@ -127,6 +127,6 @@ For more details, see the [LICENSE](LICENSE) file in this repository or visit [G
 
 **MIDI++: Elevating Roblox Piano Performance**
 
-[CALL TO ACTION BUTTON PLACEHOLDER]
+[![Download Now](https://img.shields.io/badge/Download-Now-green.svg)](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release)
 
 </div>

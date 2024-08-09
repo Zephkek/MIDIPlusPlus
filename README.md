@@ -1,73 +1,86 @@
-# MIDI++ 
-**MIDI++ for Roblox**
+<div align="center">
 
-**What is MIDI++?**
-MIDI++ is a super cool tool that helps you play MIDI files on Roblox pianos with amazing accuracy and speed. If you love Roblox, making music, or just want to have fun with your favorite songs, MIDI++ is perfect for you!
+# MIDI++ for Roblox
 
-**Insane Features**
+[LOGO PLACEHOLDER]
 
-1. **Transpose Engine**
-   - Smart Key Detection: Figures out the best key for your song.
-   - Genre Transposition: Changes the song to fit different styles of music.
-   - Suggestions: Tells you the best way to change the key so it sounds great.
-   - Easy to Play: Makes sure the music is easy to play on Roblox’s piano.
+*Advanced MIDI Playback for Roblox Pianos*
 
-2. **Performance and Speed**
-   - Built in C++: This makes it super fast and better than Python-based tools.
-   - Handles Lots of Data: Works great even with lots of notes and complicated songs.
-   - Smart Timing: Adjusts to your computer’s speed to keep everything smooth.
+[SHOWCASE VIDEO PLACEHOLDER]
 
-3. **MIDI-to-QWERTY Conversion**
-   - Roblox Piano Ready: Perfectly matches MIDI notes to your keyboard keys.
-   - Custom Key Settings: Change the key settings to match your own keyboard.
+</div>
 
-4. **Tempo Management**
-   - Real-Time Adjustments: Change the speed of the song while it’s playing.
-   - Smooth Tempo Changes: Keep everything in sync, even if you change the speed during a performance.
+---
 
-5. **Volume Control**
-   - Velocity Sensitive: Adjusts the volume based on how hard you play the notes.
-   - Smooth Changes: No sudden jumps in volume, everything sounds smooth.
+## Overview
 
-6. **Legit Mode**
-   - Human-Like Play: Adds tiny mistakes to make it sound like a real person is playing.
-   - Adjustable: You can change how realistic it sounds.
+MIDI++ is a high-performance C++ application designed for playing MIDI files on Roblox pianos with exceptional accuracy and speed. It offers unparalleled precision and advanced features for music enthusiasts and Roblox players.
 
-7. **Sustain Pedal Support**
-   - Real Pedal Actions: Makes sure the sustain pedal works just like on a real piano.
+## Key Features
+- **Powerful MIDI Parser**: Rapidly processes MIDI files, handling complex structures and corrupted data with ease for reliable playback.
+- **Transpose Engine**: Intelligent key detection, genre-specific transposition, and advanced harmonic analysis
+- **Performance Optimization**: C++ architecture, high-capacity data handling, nanosecond precision timing
+- **MIDI-to-QWERTY Conversion**: Seamless Roblox piano integration with customizable key mappings
+- **Tempo Management**: Real-time adjustments with smooth transition handling
+- **Volume Control**: Velocity-sensitive playback and dynamic volume modulation
+- **Authenticity Mode**: Simulated human-like performance with adjustable realism settings
+- **Extended Functionality**: Sustain pedal support, 88-key mode, automatic MIDI file error correction
+- **Advanced Analysis**: Chord and rhythm pattern recognition, harmonic structure analysis
+- **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, SIMD acceleration
+- **Customization**: Flexible configuration options and performance-enhancing hotkeys
 
-8. **88-Key Mode**
-   - Full Keyboard: Lets you play songs that use all 88 keys.
+## Technical Superiority
 
-9. **Error Handling**
-   - Fixes MIDI Files: Finds and fixes errors in MIDI files so they play without problems.
+- Built in C++ for maximum speed and efficiency
+- Utilizes advanced data structures and algorithms for optimal performance
+- Implements SIMD instructions for parallel processing
+- Features custom memory management for reduced overhead
+- Employs lock-free programming techniques for enhanced concurrency
+- Optimizied to the max with branch prediction and PGO
 
-10. **Harmonic and Rhythmic Analysis**
-    - Chord and Rhythm Detection: Figures out chords and rhythms to keep everything sounding right.
+## Installation
 
-11. **Event Handling and Memory Management**
-    - Efficient Processing: Handles lots of notes and big files without slowing down.
+1. Install Microsoft Visual C++ Redistributable (x64) from [here](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+2. Download MIDI++ from the [Release Page](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release)
+3. Extract the package and place MIDI files in the "midi" folder
+4. Launch MIDI++ to begin
 
-12. **Configuration Management**
-    - Custom Settings: Change settings like volume and key mappings to fit your needs.
-    - Hotkeys: Set up shortcuts to make changes quickly during a performance.
-    
-# **How to Install**
-1. Make sure you have Microsoft Visual C++ Redistributable installed on your computer.
-2. Download and unzip MIDI++.
-3. Put your MIDI files in the "midi" folder.
-4. Run the MIDI++ program and start playing!
+## System Requirements
 
-# How to Get Microsoft Visual C++ Redistributable
+- Windows 10 or later (64-bit)
+- Microsoft Visual C++ Redistributable 2022 (x64)
+- 100MB free disk space
 
-To use MIDI++, you need to have something called Microsoft Visual C++ Redistributable on your computer. It’s a program that helps other programs run correctly. Here’s how to get it:
+## Usage
 
-1. Go to the Website: Open your web browser and go to this website: [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
+[Brief usage instructions or link to documentation]
 
-2. Download the File: You can download the file on the [Release](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release) page.
 
-3. Open the File: After the download is finished, open the file you just downloaded. You might need to ask an adult to help you with this part.
+## License
 
-4. Install It: Follow the steps on the screen to install it. Just click "Install" when it asks you to.
+This project is licensed under the GNU General Public License v3.0 (GPLv3).
 
-5. Done! Once it’s installed, you’re ready to use MIDI++ and start playing music on Roblox.
+This license allows you to:
+- Use the software for any purpose
+- Change the software to suit your needs
+- Share the software with your friends and neighbors
+
+This license requires you to:
+- Share the source code when you distribute the software
+- License any modifications under GPLv3
+- Keep intact all copyright, license, and disclaimer notices
+
+This license explicitly forbids:
+- Distributing the software without the source code
+- Using the software as part of a proprietary product
+
+For more details, see the [LICENSE](LICENSE) file in this repository or visit [GNU GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html).
+---
+
+<div align="center">
+
+**MIDI++: Elevating Roblox Piano Performance**
+
+[CALL TO ACTION BUTTON PLACEHOLDER]
+
+</div>

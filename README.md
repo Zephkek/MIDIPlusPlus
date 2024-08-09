@@ -14,6 +14,7 @@
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 [![Stars](https://img.shields.io/github/stars/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/stargazers)
 [![Issues](https://img.shields.io/github/issues/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/issues)
+[![Download Now](https://img.shields.io/badge/Download-Now-green.svg)](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release)
 
 *Advanced MIDI Playback for Roblox Pianos*
 
@@ -182,7 +183,5 @@ For more details, see the [LICENSE](LICENSE) file in this repository or visit [G
 <div align="center">
 
 **MIDI++: Elevating Roblox Piano Performance**
-
-[![Download Now](https://img.shields.io/badge/Download-Now-green.svg)](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release)
 
 </div>

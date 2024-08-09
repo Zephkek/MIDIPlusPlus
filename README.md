@@ -50,12 +50,58 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 - Windows 10 or later (64-bit)
 - Microsoft Visual C++ Redistributable 2022 (x64)
 - 100MB free disk space
-
-## Usage
-
-[Brief usage instructions or link to documentation]
+- 
+## Features Usage Guide:
 
 
+The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON object:
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| ENABLED | Boolean | • Activates/deactivates Authenticity Mode<br>• When true, all other settings become active |
+| TIMING_VARIATION | Float<br>(0.0 to 1.0) | • Introduces timing deviations to each note<br>• 0.1 means ±10% variation in note timing<br>• Example: A note at 1.000s might play between 0.900s and 1.100s |
+| NOTE_SKIP_CHANCE | Float<br>(0.0 to 1.0) | • Sets probability of missing a note<br>• 0.02 means 2% chance to skip any given note<br>• Simulates human errors in fast or complex passages |
+| EXTRA_DELAY_CHANCE | Float<br>(0.0 to 1.0) | • Likelihood of inserting a pause between notes<br>• 0.05 means 5% chance of adding delay after a note<br>• Mimics human hesitation or breaths |
+| EXTRA_DELAY_MIN | Float<br>(seconds) | • Minimum duration for random delays<br>• Should be ≤ EXTRA_DELAY_MAX |
+| EXTRA_DELAY_MAX | Float<br>(seconds) | • Maximum duration for random delays<br>• Defines upper limit for added pauses |
+
+## Example Configuration
+
+```json
+{
+  "LEGIT_MODE_SETTINGS": {
+    "ENABLED": true,
+    "TIMING_VARIATION": 0.1,
+    "NOTE_SKIP_CHANCE": 0.02,
+    "EXTRA_DELAY_CHANCE": 0.05,
+    "EXTRA_DELAY_MIN": 0.05,
+    "EXTRA_DELAY_MAX": 0.2
+  }
+}
+```
+# Volume Settings
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| MIN_VOLUME | 10 | • Minimum allowed volume level<br>• Represents 10% of maximum volume |
+| MAX_VOLUME | 200 | • Maximum allowed volume level in your game<br>• Represents 200% of normal volume by default |
+| INITIAL_VOLUME | 100 | • Starting volume level on initialization<br>• Represents 100% or "normal" volume |
+| VOLUME_STEP | 10 | • Increment/decrement step for volume adjustments<br>• Each adjustment changes volume by 10 units by default |
+| ADJUSTMENT_INTERVAL_MS | 50 | • Minimum time between volume adjustments<br>• Prevents changes more frequent than every 50 milliseconds by defqult|
+
+## JSON Configuration
+
+```json
+{
+    "VOLUME_SETTINGS": {
+        "MIN_VOLUME": 10,
+        "MAX_VOLUME": 200,
+        "INITIAL_VOLUME": 100,
+        "VOLUME_STEP": 10,
+        "ADJUSTMENT_INTERVAL_MS": 50
+    }
+}
+```
 ## License
 
 This project is licensed under the GNU General Public License v3.0 (GPLv3).

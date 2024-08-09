@@ -64,7 +64,7 @@ To use MIDI++, you need to have something called Microsoft Visual C++ Redistribu
 
 1. Go to the Website: Open your web browser and go to this website: [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
 
-2. Download the File: Once you're on the page, click the download button to get the file.
+2. Download the File: You can download the file on the [Release](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release) page.
 
 3. Open the File: After the download is finished, open the file you just downloaded. You might need to ask an adult to help you with this part.
 

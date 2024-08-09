@@ -20,10 +20,6 @@
 [![Discord](https://img.shields.io/badge/Join%20Our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/AbC7De78)
 
 </div>
-*Advanced MIDI Playback for Roblox Pianos*
-
-</div>
-
 ---
 
 ## Overview

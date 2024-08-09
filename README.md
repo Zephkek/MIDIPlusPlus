@@ -51,6 +51,7 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 ## System Requirements
 
 - Windows 10 or later (64-bit)
+- AVX2 supported CPU (Generally any CPU that's not older than 2013)
 - Microsoft Visual C++ Redistributable 2022 (x64)
 - 100MB free disk space
 

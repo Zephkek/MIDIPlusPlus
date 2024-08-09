@@ -1,3 +1,11 @@
+[//]: # (
+    SEO Metadata:
+    <meta name="description" content="MIDI++: High-performance Roblox autoplayer and piano tool. Advanced MIDI playback and automation for virtual pianos. Enhance your Roblox music experience with precise control and realistic performance features.">
+    <meta name="keywords" content="Roblox autoplayer, Roblox piano autoplayer, MIDI autoplayer Roblox, virtual piano autoplayer, Roblox music autoplayer, Roblox MIDI autoplayer, Roblox instrument autoplayer, piano performance automation, Roblox MIDI converter, virtual keyboard autoplayer, Roblox music automation, MIDI playback for Roblox, piano simulation tool, Roblox autoplayer app, Roblox autoplayer software, advanced MIDI autoplayer, Roblox piano tutorial, MIDI++ features, virtual piano software, Roblox automation tools, Roblox piano bot">
+    <meta property="og:title" content="MIDI++: The Ultimate Roblox Autoplayer and Piano Tool">
+    <meta property="og:description" content="Automate your Roblox piano performances with MIDI++. Experience high-speed playback, intelligent features, and unparalleled realism with advanced autoplayer technology.">
+)
+
 <div align="center">
 
 # MIDI++ for Roblox

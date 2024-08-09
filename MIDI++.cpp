@@ -1369,19 +1369,26 @@ private:
         return 1.0;
     }
 }; 
+
+//anger's method more stable
 class HighResolutionTimer {
 private:
     static constexpr uint64_t FREQUENCY = 1'000'000'000ULL;
     std::atomic<int64_t> offset{ 0 };
     std::atomic<uint64_t> start_time{ 0 };
     const double frequency_multiplier;
-    std::atomic<double> ema_overshoot{ 1000.0 };
-    static constexpr double ALPHA = 0.4;
-    static constexpr int CALIBRATION_ROUNDS = 10;
+    std::atomic<int64_t> average_overshoot{ 1000 };
+    static constexpr int BUFFER_SIZE = 8;
+    std::array<std::atomic<int64_t>, BUFFER_SIZE> overshoot_buffer;
+    std::atomic<int> buffer_index{ 0 };
+    static constexpr int CALIBRATION_ROUNDS = 20;
 
 public:
     HighResolutionTimer() :
         frequency_multiplier(static_cast<double>(FREQUENCY) / static_cast<double>(performanceFrequency())) {
+        for (auto& a : overshoot_buffer) {
+            a.store(0, std::memory_order_relaxed);
+        }
         calibrate();
     }
 
@@ -1401,7 +1408,7 @@ public:
         constexpr std::chrono::nanoseconds SPIN_THRESHOLD(10000);
 
         auto current_time = elapsed();
-        auto sleep_duration = target_time - current_time - std::chrono::nanoseconds(static_cast<int64_t>(ema_overshoot.load(std::memory_order_relaxed)));
+        auto sleep_duration = target_time - current_time - std::chrono::nanoseconds(average_overshoot.load(std::memory_order_relaxed));
 
         if (sleep_duration > SPIN_THRESHOLD) {
             std::this_thread::sleep_for(sleep_duration - SPIN_THRESHOLD);
@@ -1412,7 +1419,7 @@ public:
         }
 
         auto actual_time = elapsed();
-        update_ema_overshoot(actual_time - target_time);
+        record_overshoot(actual_time - target_time);
     }
 
     void adjust(std::chrono::nanoseconds adjustment) noexcept {
@@ -1431,14 +1438,23 @@ private:
             auto start = elapsed();
             std::this_thread::sleep_for(std::chrono::microseconds(100));
             auto end = elapsed();
-            update_ema_overshoot(end - start - std::chrono::microseconds(100));
+            record_overshoot(end - start - std::chrono::microseconds(100));
         }
+        update_average_overshoot();
     }
 
-    void update_ema_overshoot(std::chrono::nanoseconds overshoot) noexcept {
-        double current_ema = ema_overshoot.load(std::memory_order_relaxed);
-        double new_ema = (ALPHA * overshoot.count()) + ((1.0 - ALPHA) * current_ema);
-        ema_overshoot.store(new_ema, std::memory_order_relaxed);
+    void record_overshoot(std::chrono::nanoseconds overshoot) noexcept {
+        int index = buffer_index.fetch_add(1, std::memory_order_relaxed) % BUFFER_SIZE;
+        overshoot_buffer[index].store(overshoot.count(), std::memory_order_relaxed);
+        update_average_overshoot();
+    }
+
+    void update_average_overshoot() noexcept {
+        int64_t sum = 0;
+        for (const auto& a : overshoot_buffer) {
+            sum += a.load(std::memory_order_relaxed);
+        }
+        average_overshoot.store(sum / BUFFER_SIZE, std::memory_order_relaxed);
     }
 };
 class alignas(64) NoteEventPool {
@@ -1513,7 +1529,6 @@ private:
     size_t error_history_index{ 0 };
     std::atomic<bool> eightyEightKeyModeActive{ false };
 
-
 public:
     inline void start() noexcept {
         timer.start();
@@ -1554,16 +1569,13 @@ public:
                 std::chrono::duration<double>(sleep_duration) * adjustment_factor
             );
             last_sleep_time.store(adjusted_sleep_duration);
-            auto sleep_threshold = std::chrono::microseconds(50);
-            if (adjusted_sleep_duration > sleep_threshold) {
-                timer.sleep_until(current_time + adjusted_sleep_duration - sleep_threshold);
-            }
+
+            // Busy-wait until the target time
             while (elapsed() < target_time) {
-                std::this_thread::sleep_for(std::chrono::microseconds(10));
-            } 
+                _mm_pause();  // Reduces power consumption and prevents pipeline stalls
+            }
         }
     }
-
 
     inline Duration get_last_sleep_time() const noexcept {
         return last_sleep_time.load();
@@ -2169,12 +2181,12 @@ private:
             setcolor(ConsoleColor::Blue);
             std::cout << "[TIMER] ";
             setcolor(ConsoleColor::White);
-            std::cout << "Adaptive timer enabled." << std::endl;
+            std::cout << "High Percision Timer enabled." << std::endl;
             setcolor(ConsoleColor::Yellow);
             std::cout << "[NOTE] ";
             setcolor(ConsoleColor::White);
 
-            std::cout << "Only enable this if extremely accurate playback is crucial across an extended period of time or if you are running on limited hardware." << std::endl;
+            std::cout << "Only enable this if extremely accurate playback is crucial across an extended period of time and if your cpu is good." << std::endl;
         }
         else {
             setcolor(ConsoleColor::Blue);
@@ -2854,7 +2866,7 @@ private:
     {"TOGGLE_88_KEY_MODE", "Toggle 88 Key mode"},
     {"TOGGLE_VOLUME_ADJUSTMENT", "Toggle Automatic Volume"},
     {"TOGGLE_TRANSPOSE_ADJUSTMENT", "Toggle Transpose Engine (Beta)"},
-    {"TOGGLE_ADAPTIVE_TIMER", "Adaptive Timer (Beta)"},
+    {"TOGGLE_ADAPTIVE_TIMER", "High Percision Timer"},
     {"STOP_AND_EXIT", "Stop and exit"},
     {"TOGGLE_SUSTAIN_MODE", "Toggle Sustain Mode"}
         };
@@ -2997,7 +3009,7 @@ private:
 
                 if (config.legit_mode.ENABLED) {
                     if (note_skip(gen) < config.legit_mode.NOTE_SKIP_CHANCE) {
-                        continue;  
+                        continue;  // Skip this note
                     }
 
                     if (extra_delay(gen) < config.legit_mode.EXTRA_DELAY_CHANCE) {

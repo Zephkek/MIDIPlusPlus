@@ -71,5 +71,3 @@ To use MIDI++, you need to have something called Microsoft Visual C++ Redistribu
 4. Install It: Follow the steps on the screen to install it. Just click "Install" when it asks you to.
 
 5. Done! Once it’s installed, you’re ready to use MIDI++ and start playing music on Roblox.
-
-Reminder: If you're not sure about anything, it's always a good idea to ask an adult for help.

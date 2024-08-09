@@ -6,8 +6,6 @@
 
 *Advanced MIDI Playback for Roblox Pianos*
 
-[SHOWCASE VIDEO PLACEHOLDER]
-
 </div>
 
 ---

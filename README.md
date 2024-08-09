@@ -5,8 +5,6 @@
 <meta property="og:title" content="MIDI++: The Ultimate Roblox Autoplayer and Piano Tool">
 <meta property="og:description" content="Automate your Roblox piano performances with MIDI++. Experience high-speed playback, intelligent features, and realistic sound. The ultimate tool for Roblox pianists.">)
 
-# MIDI++ for Roblox
-
 <div align="center">
 
 # MIDI++ for Roblox

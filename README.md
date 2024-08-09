@@ -106,6 +106,24 @@ The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON
     }
 }
 ```
+## Thanks
+
+Special thanks to:
+- Raven
+- Anger
+- Gene
+
+Your contributions and support have been invaluable to the development of MIDI++.
+
+## External Libraries
+
+MIDI++ utilizes the following external libraries:
+
+- [moodycamel's Concurrent Queue](https://github.com/cameron314/concurrentqueue): A fast multi-producer, multi-consumer lock-free concurrent queue for C++11
+- [nlohmann's JSON for Modern C++](https://github.com/nlohmann/json): A JSON library for Modern C++
+
+We are grateful for these high-quality, open-source libraries that have significantly enhanced the functionality and performance of MIDI++.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 (GPLv3).

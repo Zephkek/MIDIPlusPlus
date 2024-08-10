@@ -25,6 +25,7 @@
 #include "concurrentqueue.h"
 #include "json.hpp"
 #include <random>
+
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using Duration = Clock::duration;
@@ -1978,7 +1979,7 @@ private:
         return { config.key_mappings["LIMITED"], config.key_mappings["FULL"] };
     }
 
-    int stringToVK(const std::string& keyName) {
+    int stringToVK(const std::string& keyName) { //why not?
         static const std::unordered_map<std::string, int> keyMap = {
             {"LBUTTON", VK_LBUTTON}, {"RBUTTON", VK_RBUTTON}, {"CANCEL", VK_CANCEL},
             {"MBUTTON", VK_MBUTTON}, {"XBUTTON1", VK_XBUTTON1}, {"XBUTTON2", VK_XBUTTON2},
@@ -3005,7 +3006,7 @@ private:
 
                 if (config.legit_mode.ENABLED) {
                     if (note_skip(gen) < config.legit_mode.NOTE_SKIP_CHANCE) {
-                        continue;  // Skip this note
+                        continue;  // Skip this note lol
                     }
 
                     if (extra_delay(gen) < config.legit_mode.EXTRA_DELAY_CHANCE) {

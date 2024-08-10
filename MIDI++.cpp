@@ -29,6 +29,8 @@ using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using Duration = Clock::duration;
 static constexpr size_t CACHE_LINE_SIZE = 64; // now watch someone come to me with a pentium cpu or some fucking amd athlon
+static constexpr std::array<const char*, 12> NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+static constexpr size_t PREFETCH_DISTANCE = 2;
 
 struct alignas(CACHE_LINE_SIZE) NoteEvent {
     Duration time;
@@ -44,7 +46,7 @@ struct alignas(CACHE_LINE_SIZE) NoteEvent {
 
     bool operator>(const NoteEvent& other) const noexcept { return time > other.time; }
 };
-
+//todo: add error handling for incorrect json configs 
 using json = nlohmann::json;
 struct Config {
     struct VolumeSettings {
@@ -125,9 +127,9 @@ void setDefaultConfig() {
     config.volume = { 10, 200, 100, 10, 50 };
     config.sustain = { 64 };
     config.hotkeys = {
-       "VK_SPACE",  // SUSTAIN_KEY
-       "VK_RIGHT", // VOLUME_UP_KEY
-       "VK_LEFT"   // VOLUME_DOWN_KEY
+       "VK_SPACE",  // default SUSTAIN_KEY
+       "VK_RIGHT", // default VOLUME_UP_KEY
+       "VK_LEFT"   // default VOLUME_DOWN_KEY
     };
     config.key_mappings["LIMITED"] = {
         {"C2", "1"}, {"C#2", "!"}, {"D2", "2"}, {"D#2", "@"}, {"E2", "3"}, {"F2", "4"},
@@ -1604,12 +1606,6 @@ class VirtualPianoPlayer {
     std::atomic<bool> paused{ true };
     std::atomic<bool> enable_auto_transpose{ false };
     std::atomic<bool> eightyEightKeyModeActive{ false };
-
-
-    static constexpr std::array<const char*, 12> NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-    static constexpr size_t PREFETCH_DISTANCE = 2;
-    static constexpr size_t CACHE_LINE_SIZE = 64;
-
     alignas(CACHE_LINE_SIZE) moodycamel::ConcurrentQueue<NoteEvent> event_queue;
     alignas(CACHE_LINE_SIZE) std::vector<NoteEvent*> note_buffer;
     std::unordered_map<std::string, std::atomic<bool>> pressed_keys;

@@ -21,6 +21,8 @@
 
 </div>
 
+---
+
 ## Overview
 
 MIDI++ is a high-performance C++ application designed for playing MIDI files on Roblox pianos with exceptional accuracy and speed. It offers unparalleled precision and advanced features for music enthusiasts and Roblox players.

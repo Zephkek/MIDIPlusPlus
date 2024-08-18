@@ -26,6 +26,8 @@
 #include "json.hpp"
 #include <random>
 
+#pragma intrinsic(_mm256_set1_pd, _mm256_mul_pd, _mm256_cvtsd_f64, _mm256_sub_pd, _mm256_add_pd, _mm256_div_pd, _mm256_cmp_pd, _mm256_fmadd_pd)
+
 using Clock = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using Duration = Clock::duration;
@@ -47,7 +49,6 @@ struct alignas(CACHE_LINE_SIZE) NoteEvent {
 
     bool operator>(const NoteEvent& other) const noexcept { return time > other.time; }
 };
-//todo: add error handling for incorrect json configs 
 using json = nlohmann::json;
 struct Config {
     struct VolumeSettings {
@@ -76,7 +77,6 @@ struct Config {
         std::string VOLUME_UP_KEY = "VK_RIGHT";
         std::string VOLUME_DOWN_KEY = "VK_LEFT";
     };
-
     VolumeSettings volume;
     SustainSettings sustain;
     LegitModeSettings legit_mode;
@@ -175,30 +175,27 @@ void setDefaultConfig() {
         {"TOGGLE_88_KEY_MODE", "VK_F6"},
         {"TOGGLE_VOLUME_ADJUSTMENT", "VK_F7"},
         {"TOGGLE_TRANSPOSE_ADJUSTMENT", "VK_F8"},
-        {"TOGGLE_ADAPTIVE_TIMER", "VK_F9"},
+        {"RESTART_SONG", "VK_F1"},
         {"STOP_AND_EXIT", "VK_ESCAPE"},
         {"TOGGLE_SUSTAIN_MODE", "VK_F10"}
     };
+
 }
 
 void loadConfig() {
     std::string configPath = "config.json";
     std::ifstream configFile(configPath);
     if (!configFile.is_open()) {
-        std::cerr << "Config file not found at " << configPath << ". Using default settings." << std::endl;
-        setDefaultConfig();
-        return;
+        throw std::runtime_error("Config file not found at " + configPath);
     }
-
-    json j;
-    configFile >> j;
 
     try {
+        json j;
+        configFile >> j;
         j.get_to(config);
     }
-    catch (const std::exception& e) {
-        std::cerr << "Error parsing config: " << e.what() << ". Using default settings." << std::endl;
-        setDefaultConfig();
+    catch (const json::exception& e) {
+        throw std::runtime_error("Error parsing config: " + std::string(e.what()));
     }
 }
 
@@ -492,7 +489,7 @@ public:
     std::vector<double> durations;
 
     [[nodiscard]] std::string estimateKey(const std::vector<int>& notes, const std::vector<double>& durations) const {
-    std::array<double, 12> major_profile = { 0.748, 0.060, 0.488, 0.082, 0.670, 0.460, 0.096, 0.715, 0.104, 0.366, 0.057, 0.400 };
+        std::array<double, 12> major_profile = { 0.748, 0.060, 0.488, 0.082, 0.670, 0.460, 0.096, 0.715, 0.104, 0.366, 0.057, 0.400 };
         std::array<double, 12> minor_profile = { 0.712, 0.084, 0.474, 0.618, 0.049, 0.460, 0.105, 0.747, 0.404, 0.067, 0.133, 0.330 };
 
         std::vector<double> pitch_class_weighted(12, 0.0);
@@ -557,7 +554,7 @@ public:
     }
 
     [[nodiscard]] std::string detectGenre(const MidiFile& midiFile, const std::vector<int>& notes, const std::vector<double>& durations) const {
-    double tempo = midiFile.tempoChanges.empty() ? 0 : 60000000.0 / midiFile.tempoChanges[0].microsecondsPerQuarter;
+        double tempo = midiFile.tempoChanges.empty() ? 0 : 60000000.0 / midiFile.tempoChanges[0].microsecondsPerQuarter;
         int timeSignatureNumerator = midiFile.timeSignatures.empty() ? 4 : midiFile.timeSignatures[0].numerator;
         int timeSignatureDenominator = midiFile.timeSignatures.empty() ? 4 : midiFile.timeSignatures[0].denominator;
 
@@ -573,7 +570,7 @@ public:
     }
 
     [[nodiscard]] int findBestTranspose(const std::vector<int>& notes, const std::vector<double>& durations, const std::string& detectedKey, const std::string& genre) const {
-    const std::vector<int> transposeOptions = { -12, -11, -9, -7, -5, -4, -2, 0, 2, 4, 5, 7, 9, 11, 12 };
+        const std::vector<int> transposeOptions = { -12, -11, -9, -7, -5, -4, -2, 0, 2, 4, 5, 7, 9, 11, 12 };
         const std::map<std::string, int> keyToIndex = { {"C", 0}, {"C#", 1}, {"D", 2}, {"D#", 3}, {"E", 4}, {"F", 5}, {"F#", 6}, {"G", 7}, {"G#", 8}, {"A", 9}, {"A#", 10}, {"B", 11} };
 
         auto keyPos = detectedKey.find(" ");
@@ -635,13 +632,14 @@ public:
     }
 
     [[nodiscard]] int getKeySignatureComplexity(int keyIndex) const {
-    const std::vector<int> complexityLookup = { 0, 5, 2, 7, 4, 1, 6, 3, 8, 5, 2, 7 };
+        const std::vector<int> complexityLookup = { 0, 5, 2, 7, 4, 1, 6, 3, 8, 5, 2, 7 };
         return complexityLookup[keyIndex];
     }
     [[nodiscard]] double calculateIntervalComplexity(const std::vector<int>& notes, int transpose) const {
-    std::vector<int> intervals;
+        std::vector<int> intervals;
         for (size_t i = 1; i < notes.size(); ++i) {
-            intervals.push_back(std::abs((notes[i] + transpose) - (notes[i - 1] + transpose)));
+            int64_t interval = static_cast<int64_t>(notes[i]) + transpose - (static_cast<int64_t>(notes[i - 1]) + transpose);
+            intervals.push_back(std::abs(static_cast<int>(interval)));
         }
 
         double complexity = 0.0;
@@ -665,7 +663,7 @@ public:
         return complexity;
     }
     [[nodiscard]] std::pair<std::vector<int>, std::vector<double>> extractNotesAndDurations(const MidiFile& midiFile) const {
-    std::vector<int> notes;
+        std::vector<int> notes;
         std::vector<double> durations;
 
         for (const auto& track : midiFile.tracks) {
@@ -703,8 +701,8 @@ public:
         return { notes, durations };
     }
 private:
-    void keySpecialCases(const std::vector<double>& pitch_class_weighted, int& best_tonic, std::string& best_mode) const{
-    if (best_tonic == 7) {  // G
+    void keySpecialCases(const std::vector<double>& pitch_class_weighted, int& best_tonic, std::string& best_mode) const {
+        if (best_tonic == 7) {  // G
             double f_natural = pitch_class_weighted[5];  // F
             double f_sharp = pitch_class_weighted[6];    // F#
             if (f_sharp > f_natural * 1.2) {
@@ -729,10 +727,10 @@ private:
     }
 
     [[nodiscard]] int calculateInstrumentDiversity(const MidiFile& midiFile) const {
-    std::set<uint8_t> uniqueInstruments;
+        std::set<uint8_t> uniqueInstruments;
         for (const auto& track : midiFile.tracks) {
             for (const auto& event : track.events) {
-                if ((event.status & 0xF0) == 0xC0) {  
+                if ((event.status & 0xF0) == 0xC0) {
                     uniqueInstruments.insert(event.data1);
                 }
             }
@@ -740,7 +738,7 @@ private:
         return uniqueInstruments.size();
     }
     [[nodiscard]] double calculateRhythmComplexity(const std::vector<double>& durations) const {
-    if (durations.size() <= 1) {
+        if (durations.size() <= 1) {
             return 1.0;
         }
 
@@ -755,7 +753,8 @@ private:
         }
 
         double sum = std::accumulate(intervalRatios.begin(), intervalRatios.end(), 0.0);
-        double mean = sum / intervalRatios.size();
+        double mean = intervalRatios.empty() ? 0.0 : sum / intervalRatios.size();
+
 
         double variance = std::accumulate(intervalRatios.begin(), intervalRatios.end(), 0.0,
             [mean](double acc, double ratio) {
@@ -769,7 +768,7 @@ private:
 
 
     [[nodiscard]] double calculateSyncopation(const std::vector<double>& durations, size_t noteCount) const {
-    double syncopation = 0.0;
+        double syncopation = 0.0;
         for (const auto& duration : durations) {
             double beatPosition = std::fmod(duration, 1.0);
             if (beatPosition > 0.25 && beatPosition < 0.75) {
@@ -780,7 +779,7 @@ private:
     }
 
     [[nodiscard]] double calculateHarmonicComplexity(const std::vector<int>& notes, const std::vector<double>& durations) const {
-    auto chordProgression = analyzeChordProgression(notes, durations);
+        auto chordProgression = analyzeChordProgression(notes, durations);
         std::set<std::string> uniqueChords;
         for (const auto& [chord, _] : chordProgression) {
             uniqueChords.insert(chord);
@@ -789,7 +788,7 @@ private:
     }
 
     [[nodiscard]] std::string determineGenre(double tempo, int timeSignatureNumerator, int instrumentDiversity, double noteDensity, double rhythmComplexity, double pitchRange, double syncopation, double harmonicComplexity) const {
-    if (tempo >= 60 && tempo <= 80 && timeSignatureNumerator == 4 && pitchRange >= 48 && harmonicComplexity > 0.6) {
+        if (tempo >= 60 && tempo <= 80 && timeSignatureNumerator == 4 && pitchRange >= 48 && harmonicComplexity > 0.6) {
             if (harmonicComplexity > 0.8 && rhythmComplexity > 1.3) return "Romantic Piano";
             else if (harmonicComplexity > 0.7) return "Classical Piano";
             else return "Baroque Piano";
@@ -851,7 +850,7 @@ private:
     }
 
     [[nodiscard]] std::string getChord(const std::set<int>& notes) const {
-    std::vector<int> intervals;
+        std::vector<int> intervals;
         for (auto it = std::next(notes.begin()); it != notes.end(); ++it) {
             intervals.push_back((*it - *notes.begin() + 12) % 12);
         }
@@ -963,7 +962,7 @@ private:
             {{4, 8, 11, 14, 18, 22, 25, 29, 32, 36, 40}, "Augmented Major 13th 11th 9th Flat 5 Sharp 11 Sharp 13 Flat 9"},
             {{3, 7, 10, 13, 17, 20, 24, 27, 31, 34}, "Minor 13th 11th 9th Flat 5 Sharp 11 Flat 13 Sharp 11"},
             {{4, 7, 11, 14, 18, 21, 25, 29, 32, 36, 40}, "Major 13th 11th 9th Flat 5 Sharp 11 Sharp 13 Flat 9"},
-            {{3, 6, 10, 13, 17, 20, 24, 28, 32, 36, 40}, "Diminished 13th 11th 9th Sharp 5 Flat 11 Sharp 13 Flat 9"} 
+            {{3, 6, 10, 13, 17, 20, 24, 28, 32, 36, 40}, "Diminished 13th 11th 9th Sharp 5 Flat 11 Sharp 13 Flat 9"}
         };
 
         auto it = chordTypes.find(intervals);
@@ -986,7 +985,7 @@ private:
     }
 
     [[nodiscard]] std::vector<std::pair<std::string, double>> analyzeChordProgression(const std::vector<int>& notes, const std::vector<double>& durations) const {
-    std::vector<std::pair<std::string, double>> progression;
+        std::vector<std::pair<std::string, double>> progression;
         std::set<int> currentChord;
         double chordDuration = 0.0;
         const double chordThreshold = 0.25;
@@ -1007,7 +1006,7 @@ private:
     }
 
     [[nodiscard]] double calculateCorrelation(const std::vector<double>& v1, const std::vector<double>& v2) const {
-    double mean_v1 = std::accumulate(v1.begin(), v1.end(), 0.0) / v1.size();
+        double mean_v1 = std::accumulate(v1.begin(), v1.end(), 0.0) / v1.size();
         double mean_v2 = std::accumulate(v2.begin(), v2.end(), 0.0) / v2.size();
 
         double numerator = 0.0;
@@ -1025,7 +1024,7 @@ private:
 
 
     [[nodiscard]] double calculateGenreSpecificScore(int newKeyIndex, int keySignatureComplexity, const std::vector<std::pair<std::string, double>>& chordProgression, const std::string& genre, int transpose) const {
-    double score = 0.0;
+        double score = 0.0;
 
         std::vector<int> commonClassicalKeys = { 0, 2, 4, 5, 7, 9, 11 };
         std::vector<int> commonRomanticKeys = { 0, 4, 5, 7, 11 };
@@ -1256,7 +1255,7 @@ private:
     }
 
     [[nodiscard]] double calculateNoteDistributionEntropy(const std::vector<int>& notes, int transpose) const {
-    std::vector<int> noteDistribution(12, 0);
+        std::vector<int> noteDistribution(12, 0);
         for (int note : notes) {
             noteDistribution[(note + transpose) % 12]++;
         }
@@ -1272,7 +1271,7 @@ private:
         return entropy * 5.0;
     }
     [[nodiscard]] double calculatePlayabilityScore(int newKeyIndex, int transpose) const {
-    double score = 0.0;
+        double score = 0.0;
         std::vector<int> easyKeys = { 0, 7, 5, 2, 9, 4 }; // C, G, F, D, A, E
         if (std::find(easyKeys.begin(), easyKeys.end(), newKeyIndex) != easyKeys.end()) {
             score += 15.0;
@@ -1289,77 +1288,77 @@ private:
     }
     // staying up till 4am fine tuning this was def worth it..
     [[nodiscard]] double calculateHarmonicTension(const std::string& chord1, const std::string& chord2) const {
-    const std::unordered_map<std::string, std::unordered_map<std::string, double>> tensionValues = {
-            {"Major", {{"Major", 0.0}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.4}, {"Major 7th", 0.1}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.5}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.3}, {"9th", 0.4}, {"Minor 9th", 0.6}, {"Major 9th", 0.2}, {"11th", 0.5}, {"Minor 11th", 0.7}, {"Major 11th", 0.3}, {"13th", 0.5}, {"Minor 13th", 0.7}, {"Major 13th", 0.3}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.7}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
-            {"Minor", {{"Major", 0.2}, {"Minor", 0.0}, {"Diminished", 0.3}, {"Augmented", 0.6}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.1}, {"Dominant 7th", 0.5}, {"Major 7th", 0.4}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.7}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.8}}},
-            {"Diminished", {{"Major", 0.5}, {"Minor", 0.3}, {"Diminished", 0.0}, {"Augmented", 0.8}, {"Suspended 2nd", 0.6}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.6}, {"Major 7th", 0.5}, {"Diminished 7th", 0.1}, {"Minor Major 7th", 0.3}, {"6th", 0.7}, {"Minor 6th", 0.5}, {"Major Add 9", 0.6}, {"Minor Add 9", 0.3}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.8}, {"11th", 0.6}, {"Minor 11th", 0.4}, {"Major 11th", 0.9}, {"13th", 0.8}, {"Minor 13th", 0.5}, {"Major 13th", 0.9}, {"Dominant 9th", 0.7}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.8}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.7}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
-            {"Augmented", {{"Major", 0.7}, {"Minor", 0.6}, {"Diminished", 0.8}, {"Augmented", 0.0}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.8}, {"Major 7th", 0.6}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.7}, {"6th", 0.8}, {"Minor 6th", 0.6}, {"Major Add 9", 0.7}, {"Minor Add 9", 0.6}, {"9th", 0.8}, {"Minor 9th", 0.7}, {"Major 9th", 0.9}, {"11th", 0.7}, {"Minor 11th", 0.6}, {"Major 11th", 1.0}, {"13th", 0.9}, {"Minor 13th", 0.7}, {"Major 13th", 1.0}, {"Dominant 9th", 0.8}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 0.1}, {"Dominant 13th", 0.9}, {"Minor 7th Flat 5", 0.7}, {"Half Diminished 7th", 0.8}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.6}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 1.0}}},
-            {"Suspended 2nd", {{"Major", 0.3}, {"Minor", 0.4}, {"Diminished", 0.6}, {"Augmented", 0.5}, {"Suspended 2nd", 0.0}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.4}, {"Major 7th", 0.3}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.4}, {"6th", 0.3}, {"Minor 6th", 0.5}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.4}, {"9th", 0.4}, {"Minor 9th", 0.5}, {"Major 9th", 0.3}, {"11th", 0.4}, {"Minor 11th", 0.5}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.5}, {"Major 13th", 0.3}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.4}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.8}}},
-            {"Suspended 4th", {{"Major", 0.4}, {"Minor", 0.3}, {"Diminished", 0.7}, {"Augmented", 0.6}, {"Suspended 2nd", 0.2}, {"Suspended 4th", 0.0}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.3}, {"Major 7th", 0.2}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.3}, {"6th", 0.4}, {"Minor 6th", 0.3}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.3}, {"9th", 0.3}, {"Minor 9th", 0.4}, {"Major 9th", 0.2}, {"11th", 0.3}, {"Minor 11th", 0.4}, {"Major 11th", 0.2}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.2}, {"Dominant 9th", 0.3}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.7}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.4}, {"Half Diminished 7th", 0.3}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.7}}},
-            {"Minor 7th", {{"Major", 0.6}, {"Minor", 0.1}, {"Diminished", 0.4}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.0}, {"Dominant 7th", 0.5}, {"Major 7th", 0.6}, {"Diminished 7th", 0.4}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.3}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.2}, {"9th", 0.3}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.2}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"Dominant 7th", {{"Major", 0.4}, {"Minor", 0.5}, {"Diminished", 0.6}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.0}, {"Major 7th", 0.3}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.4}, {"6th", 0.5}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.5}, {"9th", 0.1}, {"Minor 9th", 0.3}, {"Major 9th", 0.4}, {"11th", 0.2}, {"Minor 11th", 0.4}, {"Major 11th", 0.5}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.5}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.4}, {"Half Diminished 7th", 0.3}, {"6/9", 0.5}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.6}}},
-            {"Major 7th", {{"Major", 0.1}, {"Minor", 0.4}, {"Diminished", 0.5}, {"Augmented", 0.6}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.3}, {"Major 7th", 0.0}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.4}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.4}, {"9th", 0.2}, {"Minor 9th", 0.4}, {"Major 9th", 0.1}, {"11th", 0.3}, {"Minor 11th", 0.5}, {"Major 11th", 0.1}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.2}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.5}}},
-            {"Diminished 7th", {{"Major", 0.8}, {"Minor", 0.6}, {"Diminished", 0.1}, {"Augmented", 0.9}, {"Suspended 2nd", 0.7}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.7}, {"Major 7th", 0.8}, {"Diminished 7th", 0.0}, {"Minor Major 7th", 0.5}, {"6th", 0.9}, {"Minor 6th", 0.6}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.6}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.9}, {"11th", 0.7}, {"Minor 11th", 0.4}, {"Major 11th", 1.0}, {"13th", 0.9}, {"Minor 13th", 0.5}, {"Major 13th", 1.0}, {"Dominant 9th", 0.8}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.9}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
-            {"Minor Major 7th", {{"Major", 0.5}, {"Minor", 0.2}, {"Diminished", 0.3}, {"Augmented", 0.7}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.4}, {"Major 7th", 0.4}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.0}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"6th", {{"Major", 0.2}, {"Minor", 0.5}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.5}, {"Major 7th", 0.2}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.0}, {"Minor 6th", 0.5}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.5}, {"9th", 0.5}, {"Minor 9th", 0.3}, {"Major 9th", 0.2}, {"11th", 0.4}, {"Minor 11th", 0.5}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.5}, {"Major 13th", 0.3}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.2}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.8}}},
-            {"Minor 6th", {{"Major", 0.3}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.6}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.4}, {"Major 7th", 0.3}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.0}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"Major Add 9", {{"Major", 0.1}, {"Minor", 0.4}, {"Diminished", 0.6}, {"Augmented", 0.7}, {"Suspended 2nd", 0.2}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.3}, {"Major 7th", 0.1}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.4}, {"6th", 0.3}, {"Minor 6th", 0.4}, {"Major Add 9", 0.0}, {"Minor Add 9", 0.3}, {"9th", 0.2}, {"Minor 9th", 0.3}, {"Major 9th", 0.1}, {"11th", 0.3}, {"Minor 11th", 0.4}, {"Major 11th", 0.2}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.2}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.5}}},
-            {"Minor Add 9", {{"Major", 0.3}, {"Minor", 0.1}, {"Diminished", 0.3}, {"Augmented", 0.6}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.5}, {"Major 7th", 0.4}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.1}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.0}, {"9th", 0.4}, {"Minor 9th", 0.1}, {"Major 9th", 0.5}, {"11th", 0.3}, {"Minor 11th", 0.1}, {"Major 11th", 0.6}, {"13th", 0.5}, {"Minor 13th", 0.1}, {"Major 13th", 0.7}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"9th", {{"Major", 0.4}, {"Minor", 0.5}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.1}, {"Major 7th", 0.2}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.5}, {"6th", 0.5}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.0}, {"Minor 9th", 0.3}, {"Major 9th", 0.1}, {"11th", 0.2}, {"Minor 11th", 0.4}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.4}, {"Major 13th", 0.3}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.6}}},
-            {"Minor 9th", {{"Major", 0.6}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.3}, {"Major 7th", 0.4}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.3}, {"Minor 9th", 0.0}, {"Major 9th", 0.5}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.6}, {"13th", 0.5}, {"Minor 13th", 0.1}, {"Major 13th", 0.7}, {"Dominant 9th", 0.3}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"Major 9th", {{"Major", 0.2}, {"Minor", 0.5}, {"Diminished", 0.8}, {"Augmented", 0.9}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.4}, {"Major 7th", 0.1}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.6}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.5}, {"9th", 0.1}, {"Minor 9th", 0.5}, {"Major 9th", 0.0}, {"11th", 0.3}, {"Minor 11th", 0.5}, {"Major 11th", 0.2}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.1}, {"Dominant 9th", 0.1}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.7}, {"Half Diminished 7th", 0.6}, {"6/9", 0.2}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.5}}},
-            {"11th", {{"Major", 0.5}, {"Minor", 0.4}, {"Diminished", 0.6}, {"Augmented", 0.7}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.2}, {"Major 7th", 0.3}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.4}, {"6th", 0.4}, {"Minor 6th", 0.3}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.2}, {"Minor 9th", 0.4}, {"Major 9th", 0.3}, {"11th", 0.0}, {"Minor 11th", 0.3}, {"Major 11th", 0.1}, {"13th", 0.2}, {"Minor 13th", 0.3}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.7}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.4}, {"Half Diminished 7th", 0.5}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.7}}},
-            {"Minor 11th", {{"Major", 0.7}, {"Minor", 0.2}, {"Diminished", 0.4}, {"Augmented", 0.6}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.4}, {"Major 7th", 0.5}, {"Diminished 7th", 0.4}, {"Minor Major 7th", 0.1}, {"6th", 0.6}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.4}, {"Minor 9th", 0.1}, {"Major 9th", 0.5}, {"11th", 0.3}, {"Minor 11th", 0.0}, {"Major 11th", 0.6}, {"13th", 0.5}, {"Minor 13th", 0.1}, {"Major 13th", 0.7}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.5}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"Major 11th", {{"Major", 0.3}, {"Minor", 0.6}, {"Diminished", 0.9}, {"Augmented", 1.0}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.5}, {"Major 7th", 0.1}, {"Diminished 7th", 1.0}, {"Minor Major 7th", 0.6}, {"6th", 0.3}, {"Minor 6th", 0.5}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.6}, {"9th", 0.3}, {"Minor 9th", 0.5}, {"Major 9th", 0.2}, {"11th", 0.1}, {"Minor 11th", 0.6}, {"Major 11th", 0.0}, {"13th", 0.1}, {"Minor 13th", 0.5}, {"Major 13th", 0.1}, {"Dominant 9th", 0.3}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 1.1}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.8}, {"Half Diminished 7th", 0.7}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.6}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 0.5}}},
-            {"13th", {{"Major", 0.5}, {"Minor", 0.6}, {"Diminished", 0.8}, {"Augmented", 0.9}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.3}, {"Major 7th", 0.3}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.4}, {"Minor 6th", 0.6}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.5}, {"9th", 0.4}, {"Minor 9th", 0.5}, {"Major 9th", 0.3}, {"11th", 0.2}, {"Minor 11th", 0.5}, {"Major 11th", 0.1}, {"13th", 0.0}, {"Minor 13th", 0.3}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.2}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.7}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
-            {"Minor 13th", {{"Major", 0.7}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.4}, {"Major 7th", 0.5}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.1}, {"6th", 0.6}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.4}, {"Minor 9th", 0.1}, {"Major 9th", 0.5}, {"11th", 0.3}, {"Minor 11th", 0.1}, {"Major 11th", 0.6}, {"13th", 0.3}, {"Minor 13th", 0.0}, {"Major 13th", 0.7}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.5}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
-            {"Major 13th", {{"Major", 0.3}, {"Minor", 0.7}, {"Diminished", 1.0}, {"Augmented", 1.1}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.8}, {"Dominant 7th", 0.5}, {"Major 7th", 0.1}, {"Diminished 7th", 1.1}, {"Minor Major 7th", 0.7}, {"6th", 0.3}, {"Minor 6th", 0.5}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.6}, {"9th", 0.3}, {"Minor 9th", 0.5}, {"Major 9th", 0.2}, {"11th", 0.1}, {"Minor 11th", 0.6}, {"Major 11th", 0.1}, {"13th", 0.1}, {"Minor 13th", 0.5}, {"Major 13th", 0.0}, {"Dominant 9th", 0.3}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 1.1}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.8}, {"Half Diminished 7th", 0.7}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.6}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 0.5}}},
-            {"Dominant 9th", {{"Major", 0.4}, {"Minor", 0.5}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.1}, {"Major 7th", 0.2}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.5}, {"6th", 0.5}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.2}, {"Minor 9th", 0.4}, {"Major 9th", 0.1}, {"11th", 0.2}, {"Minor 11th", 0.4}, {"Major 11th", 0.3}, {"13th", 0.2}, {"Minor 13th", 0.4}, {"Major 13th", 0.1}, {"Dominant 9th", 0.0}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.2}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.6}}},
-            {"Diminished 9th", {{"Major", 0.8}, {"Minor", 0.6}, {"Diminished", 0.1}, {"Augmented", 0.9}, {"Suspended 2nd", 0.7}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.7}, {"Major 7th", 0.8}, {"Diminished 7th", 0.0}, {"Minor Major 7th", 0.5}, {"6th", 0.9}, {"Minor 6th", 0.6}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.6}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.9}, {"11th", 0.7}, {"Minor 11th", 0.4}, {"Major 11th", 1.0}, {"13th", 0.9}, {"Minor 13th", 0.5}, {"Major 13th", 1.0}, {"Dominant 9th", 0.8}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.9}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
-            {"Augmented Major 7th", {{"Major", 0.9}, {"Minor", 0.8}, {"Diminished", 1.0}, {"Augmented", 0.1}, {"Suspended 2nd", 0.8}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.8}, {"Major 7th", 0.9}, {"Diminished 7th", 1.0}, {"Minor Major 7th", 0.8}, {"6th", 1.0}, {"Minor 6th", 0.8}, {"Major Add 9", 0.9}, {"Minor Add 9", 0.8}, {"9th", 0.8}, {"Minor 9th", 0.7}, {"Major 9th", 1.0}, {"11th", 0.9}, {"Minor 11th", 0.8}, {"Major 11th", 1.1}, {"13th", 1.0}, {"Minor 13th", 0.7}, {"Major 13th", 1.1}, {"Dominant 9th", 0.8}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 0.0}, {"Dominant 13th", 1.0}, {"Minor 7th Flat 5", 0.8}, {"Half Diminished 7th", 0.9}, {"6/9", 1.0}, {"Minor 11th Flat 5", 0.7}, {"Diminished 11th", 1.0}, {"Major 13th Flat 9", 1.1}}},
-            {"Dominant 13th", {{"Major", 0.6}, {"Minor", 0.5}, {"Diminished", 0.8}, {"Augmented", 0.9}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.3}, {"Major 7th", 0.4}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.4}, {"Minor 6th", 0.5}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.5}, {"9th", 0.4}, {"Minor 9th", 0.5}, {"Major 9th", 0.3}, {"11th", 0.2}, {"Minor 11th", 0.5}, {"Major 11th", 0.1}, {"13th", 0.2}, {"Minor 13th", 0.3}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.0}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
-            {"Minor 7th Flat 5", {{"Major", 0.6}, {"Minor", 0.3}, {"Diminished", 0.2}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.4}, {"Major 7th", 0.6}, {"Diminished 7th", 0.2}, {"Minor Major 7th", 0.3}, {"6th", 0.5}, {"Minor 6th", 0.3}, {"Major Add 9", 0.6}, {"Minor Add 9", 0.3}, {"9th", 0.5}, {"Minor 9th", 0.3}, {"Major 9th", 0.7}, {"11th", 0.4}, {"Minor 11th", 0.3}, {"Major 11th", 0.8}, {"13th", 0.6}, {"Minor 13th", 0.3}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.2}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.0}, {"Half Diminished 7th", 0.1}, {"6/9", 0.5}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.2}, {"Major 13th Flat 9", 0.9}}},
-            {"Half Diminished 7th", {{"Major", 0.5}, {"Minor", 0.4}, {"Diminished", 0.1}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.3}, {"Major 7th", 0.5}, {"Diminished 7th", 0.1}, {"Minor Major 7th", 0.4}, {"6th", 0.6}, {"Minor 6th", 0.4}, {"Major Add 9", 0.5}, {"Minor Add 9", 0.4}, {"9th", 0.6}, {"Minor 9th", 0.4}, {"Major 9th", 0.7}, {"11th", 0.5}, {"Minor 11th", 0.4}, {"Major 11th", 0.8}, {"13th", 0.7}, {"Minor 13th", 0.4}, {"Major 13th", 0.9}, {"Dominant 9th", 0.6}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.1}, {"Half Diminished 7th", 0.0}, {"6/9", 0.6}, {"Minor 11th Flat 5", 0.1}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 1.0}}},
-            {"6/9", {{"Major", 0.3}, {"Minor", 0.4}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.5}, {"Major 7th", 0.2}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.2}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.3}, {"Minor 9th", 0.4}, {"Major 9th", 0.2}, {"11th", 0.4}, {"Minor 11th", 0.3}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.4}, {"Major 13th", 0.3}, {"Dominant 9th", 0.3}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.0}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.8}}},
-            {"Minor 11th Flat 5", {{"Major", 0.7}, {"Minor", 0.3}, {"Diminished", 0.2}, {"Augmented", 0.6}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.4}, {"Major 7th", 0.5}, {"Diminished 7th", 0.2}, {"Minor Major 7th", 0.3}, {"6th", 0.6}, {"Minor 6th", 0.3}, {"Major Add 9", 0.5}, {"Minor Add 9", 0.3}, {"9th", 0.5}, {"Minor 9th", 0.3}, {"Major 9th", 0.7}, {"11th", 0.4}, {"Minor 11th", 0.3}, {"Major 11th", 0.8}, {"13th", 0.6}, {"Minor 13th", 0.3}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.2}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.0}, {"Diminished 11th", 0.2}, {"Major 13th Flat 9", 0.9}}},
-            {"Diminished 11th", {{"Major", 0.8}, {"Minor", 0.6}, {"Diminished", 0.1}, {"Augmented", 0.9}, {"Suspended 2nd", 0.7}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.7}, {"Major 7th", 0.8}, {"Diminished 7th", 0.0}, {"Minor Major 7th", 0.5}, {"6th", 0.9}, {"Minor 6th", 0.6}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.6}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.9}, {"11th", 0.6}, {"Minor 11th", 0.4}, {"Major 11th", 0.9}, {"13th", 0.8}, {"Minor 13th", 0.5}, {"Major 13th", 1.0}, {"Dominant 9th", 0.7}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.8}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.7}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.0}, {"Major 13th Flat 9", 0.9}}},
-            {"Major 13th Flat 9", {{"Major", 0.6}, {"Minor", 0.8}, {"Diminished", 0.9}, {"Augmented", 1.0}, {"Suspended 2nd", 0.8}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.6}, {"Major 7th", 0.5}, {"Diminished 7th", 1.0}, {"Minor Major 7th", 0.7}, {"6th", 0.8}, {"Minor 6th", 0.7}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.7}, {"9th", 0.6}, {"Minor 9th", 0.7}, {"Major 9th", 0.5}, {"11th", 0.7}, {"Minor 11th", 0.7}, {"Major 11th", 0.8}, {"13th", 0.6}, {"Minor 13th", 0.7}, {"Major 13th", 0.5}, {"Dominant 9th", 0.6}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 1.1}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.9}, {"Half Diminished 7th", 1.0}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.9}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 0.0}}},
-            {"Major", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"Minor", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Diminished", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
-            {"Augmented", {{"Add9", 0.6}, {"7sus4", 0.7}, {"Maj7#11", 0.8}, {"7b9", 0.9}, {"7#9", 1.0}, {"m7b9", 0.7}, {"7#5", 0.8}, {"mMaj7", 0.6}, {"m7#5", 0.7}, {"Maj9", 0.5}, {"7b13", 0.9}}},
-            {"Suspended 2nd", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
-            {"Suspended 4th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
-            {"Minor 7th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Dominant 7th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
-            {"Major 7th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Diminished 7th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
-            {"Minor Major 7th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"6th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
-            {"Minor 6th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Major Add 9", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
-            {"Minor Add 9", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"9th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"Minor 9th", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
-            {"Major 9th", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
-            {"11th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
-            {"Minor 11th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Major 11th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"13th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
-            {"Minor 13th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Major 13th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"Dominant 9th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
-            {"Diminished 9th", {{"Add9", 0.6}, {"7sus4", 0.7}, {"Maj7#11", 0.8}, {"7b9", 0.9}, {"7#9", 1.0}, {"m7b9", 0.7}, {"7#5", 0.8}, {"mMaj7", 0.6}, {"m7#5", 0.7}, {"Maj9", 0.5}, {"7b13", 0.9}}},
-            {"Augmented Major 7th", {{"Add9", 0.7}, {"7sus4", 0.8}, {"Maj7#11", 0.9}, {"7b9", 1.0}, {"7#9", 1.1}, {"m7b9", 0.8}, {"7#5", 0.9}, {"mMaj7", 0.7}, {"m7#5", 0.8}, {"Maj9", 0.6}, {"7b13", 1.0}}},
-            {"Dominant 13th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
-            {"Minor 7th Flat 5", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
-            {"Half Diminished 7th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"6/9", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
-            {"Minor 11th Flat 5", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
-            {"Diminished 11th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
-            {"Major 13th Flat 9", {{"Add9", 0.6}, {"7sus4", 0.7}, {"Maj7#11", 0.8}, {"7b9", 0.9}, {"7#9", 1.0}, {"m7b9", 0.7}, {"7#5", 0.8}, {"mMaj7", 0.6}, {"m7#5", 0.7}, {"Maj9", 0.5}, {"7b13", 0.9}}}
+        const std::unordered_map<std::string, std::unordered_map<std::string, double>> tensionValues = {
+                {"Major", {{"Major", 0.0}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.4}, {"Major 7th", 0.1}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.5}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.3}, {"9th", 0.4}, {"Minor 9th", 0.6}, {"Major 9th", 0.2}, {"11th", 0.5}, {"Minor 11th", 0.7}, {"Major 11th", 0.3}, {"13th", 0.5}, {"Minor 13th", 0.7}, {"Major 13th", 0.3}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.7}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
+                {"Minor", {{"Major", 0.2}, {"Minor", 0.0}, {"Diminished", 0.3}, {"Augmented", 0.6}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.1}, {"Dominant 7th", 0.5}, {"Major 7th", 0.4}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.7}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.8}}},
+                {"Diminished", {{"Major", 0.5}, {"Minor", 0.3}, {"Diminished", 0.0}, {"Augmented", 0.8}, {"Suspended 2nd", 0.6}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.6}, {"Major 7th", 0.5}, {"Diminished 7th", 0.1}, {"Minor Major 7th", 0.3}, {"6th", 0.7}, {"Minor 6th", 0.5}, {"Major Add 9", 0.6}, {"Minor Add 9", 0.3}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.8}, {"11th", 0.6}, {"Minor 11th", 0.4}, {"Major 11th", 0.9}, {"13th", 0.8}, {"Minor 13th", 0.5}, {"Major 13th", 0.9}, {"Dominant 9th", 0.7}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.8}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.7}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
+                {"Augmented", {{"Major", 0.7}, {"Minor", 0.6}, {"Diminished", 0.8}, {"Augmented", 0.0}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.8}, {"Major 7th", 0.6}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.7}, {"6th", 0.8}, {"Minor 6th", 0.6}, {"Major Add 9", 0.7}, {"Minor Add 9", 0.6}, {"9th", 0.8}, {"Minor 9th", 0.7}, {"Major 9th", 0.9}, {"11th", 0.7}, {"Minor 11th", 0.6}, {"Major 11th", 1.0}, {"13th", 0.9}, {"Minor 13th", 0.7}, {"Major 13th", 1.0}, {"Dominant 9th", 0.8}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 0.1}, {"Dominant 13th", 0.9}, {"Minor 7th Flat 5", 0.7}, {"Half Diminished 7th", 0.8}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.6}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 1.0}}},
+                {"Suspended 2nd", {{"Major", 0.3}, {"Minor", 0.4}, {"Diminished", 0.6}, {"Augmented", 0.5}, {"Suspended 2nd", 0.0}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.4}, {"Major 7th", 0.3}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.4}, {"6th", 0.3}, {"Minor 6th", 0.5}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.4}, {"9th", 0.4}, {"Minor 9th", 0.5}, {"Major 9th", 0.3}, {"11th", 0.4}, {"Minor 11th", 0.5}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.5}, {"Major 13th", 0.3}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.4}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.8}}},
+                {"Suspended 4th", {{"Major", 0.4}, {"Minor", 0.3}, {"Diminished", 0.7}, {"Augmented", 0.6}, {"Suspended 2nd", 0.2}, {"Suspended 4th", 0.0}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.3}, {"Major 7th", 0.2}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.3}, {"6th", 0.4}, {"Minor 6th", 0.3}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.3}, {"9th", 0.3}, {"Minor 9th", 0.4}, {"Major 9th", 0.2}, {"11th", 0.3}, {"Minor 11th", 0.4}, {"Major 11th", 0.2}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.2}, {"Dominant 9th", 0.3}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.7}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.4}, {"Half Diminished 7th", 0.3}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.7}}},
+                {"Minor 7th", {{"Major", 0.6}, {"Minor", 0.1}, {"Diminished", 0.4}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.0}, {"Dominant 7th", 0.5}, {"Major 7th", 0.6}, {"Diminished 7th", 0.4}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.3}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.2}, {"9th", 0.3}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.2}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"Dominant 7th", {{"Major", 0.4}, {"Minor", 0.5}, {"Diminished", 0.6}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.0}, {"Major 7th", 0.3}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.4}, {"6th", 0.5}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.5}, {"9th", 0.1}, {"Minor 9th", 0.3}, {"Major 9th", 0.4}, {"11th", 0.2}, {"Minor 11th", 0.4}, {"Major 11th", 0.5}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.5}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.4}, {"Half Diminished 7th", 0.3}, {"6/9", 0.5}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.6}}},
+                {"Major 7th", {{"Major", 0.1}, {"Minor", 0.4}, {"Diminished", 0.5}, {"Augmented", 0.6}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.3}, {"Major 7th", 0.0}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.4}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.4}, {"9th", 0.2}, {"Minor 9th", 0.4}, {"Major 9th", 0.1}, {"11th", 0.3}, {"Minor 11th", 0.5}, {"Major 11th", 0.1}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.2}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.5}}},
+                {"Diminished 7th", {{"Major", 0.8}, {"Minor", 0.6}, {"Diminished", 0.1}, {"Augmented", 0.9}, {"Suspended 2nd", 0.7}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.7}, {"Major 7th", 0.8}, {"Diminished 7th", 0.0}, {"Minor Major 7th", 0.5}, {"6th", 0.9}, {"Minor 6th", 0.6}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.6}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.9}, {"11th", 0.7}, {"Minor 11th", 0.4}, {"Major 11th", 1.0}, {"13th", 0.9}, {"Minor 13th", 0.5}, {"Major 13th", 1.0}, {"Dominant 9th", 0.8}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.9}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
+                {"Minor Major 7th", {{"Major", 0.5}, {"Minor", 0.2}, {"Diminished", 0.3}, {"Augmented", 0.7}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.4}, {"Major 7th", 0.4}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.0}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"6th", {{"Major", 0.2}, {"Minor", 0.5}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.5}, {"Major 7th", 0.2}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.0}, {"Minor 6th", 0.5}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.5}, {"9th", 0.5}, {"Minor 9th", 0.3}, {"Major 9th", 0.2}, {"11th", 0.4}, {"Minor 11th", 0.5}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.5}, {"Major 13th", 0.3}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.2}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.8}}},
+                {"Minor 6th", {{"Major", 0.3}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.6}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.4}, {"Major 7th", 0.3}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.0}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.5}, {"Minor 9th", 0.2}, {"Major 9th", 0.6}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.7}, {"13th", 0.6}, {"Minor 13th", 0.2}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"Major Add 9", {{"Major", 0.1}, {"Minor", 0.4}, {"Diminished", 0.6}, {"Augmented", 0.7}, {"Suspended 2nd", 0.2}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.3}, {"Major 7th", 0.1}, {"Diminished 7th", 0.8}, {"Minor Major 7th", 0.4}, {"6th", 0.3}, {"Minor 6th", 0.4}, {"Major Add 9", 0.0}, {"Minor Add 9", 0.3}, {"9th", 0.2}, {"Minor 9th", 0.3}, {"Major 9th", 0.1}, {"11th", 0.3}, {"Minor 11th", 0.4}, {"Major 11th", 0.2}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.2}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.8}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.5}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.5}}},
+                {"Minor Add 9", {{"Major", 0.3}, {"Minor", 0.1}, {"Diminished", 0.3}, {"Augmented", 0.6}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.5}, {"Major 7th", 0.4}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.1}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.0}, {"9th", 0.4}, {"Minor 9th", 0.1}, {"Major 9th", 0.5}, {"11th", 0.3}, {"Minor 11th", 0.1}, {"Major 11th", 0.6}, {"13th", 0.5}, {"Minor 13th", 0.1}, {"Major 13th", 0.7}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"9th", {{"Major", 0.4}, {"Minor", 0.5}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.1}, {"Major 7th", 0.2}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.5}, {"6th", 0.5}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.0}, {"Minor 9th", 0.3}, {"Major 9th", 0.1}, {"11th", 0.2}, {"Minor 11th", 0.4}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.4}, {"Major 13th", 0.3}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.6}}},
+                {"Minor 9th", {{"Major", 0.6}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.3}, {"Major 7th", 0.4}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.2}, {"6th", 0.5}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.3}, {"Minor 9th", 0.0}, {"Major 9th", 0.5}, {"11th", 0.4}, {"Minor 11th", 0.1}, {"Major 11th", 0.6}, {"13th", 0.5}, {"Minor 13th", 0.1}, {"Major 13th", 0.7}, {"Dominant 9th", 0.3}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"Major 9th", {{"Major", 0.2}, {"Minor", 0.5}, {"Diminished", 0.8}, {"Augmented", 0.9}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.4}, {"Major 7th", 0.1}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.6}, {"6th", 0.2}, {"Minor 6th", 0.3}, {"Major Add 9", 0.1}, {"Minor Add 9", 0.5}, {"9th", 0.1}, {"Minor 9th", 0.5}, {"Major 9th", 0.0}, {"11th", 0.3}, {"Minor 11th", 0.5}, {"Major 11th", 0.2}, {"13th", 0.3}, {"Minor 13th", 0.4}, {"Major 13th", 0.1}, {"Dominant 9th", 0.1}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.7}, {"Half Diminished 7th", 0.6}, {"6/9", 0.2}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.5}}},
+                {"11th", {{"Major", 0.5}, {"Minor", 0.4}, {"Diminished", 0.6}, {"Augmented", 0.7}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.2}, {"Major 7th", 0.3}, {"Diminished 7th", 0.6}, {"Minor Major 7th", 0.4}, {"6th", 0.4}, {"Minor 6th", 0.3}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.2}, {"Minor 9th", 0.4}, {"Major 9th", 0.3}, {"11th", 0.0}, {"Minor 11th", 0.3}, {"Major 11th", 0.1}, {"13th", 0.2}, {"Minor 13th", 0.3}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.6}, {"Augmented Major 7th", 0.7}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.4}, {"Half Diminished 7th", 0.5}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.6}, {"Major 13th Flat 9", 0.7}}},
+                {"Minor 11th", {{"Major", 0.7}, {"Minor", 0.2}, {"Diminished", 0.4}, {"Augmented", 0.6}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.4}, {"Major 7th", 0.5}, {"Diminished 7th", 0.4}, {"Minor Major 7th", 0.1}, {"6th", 0.6}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.4}, {"Minor 9th", 0.1}, {"Major 9th", 0.5}, {"11th", 0.3}, {"Minor 11th", 0.0}, {"Major 11th", 0.6}, {"13th", 0.5}, {"Minor 13th", 0.1}, {"Major 13th", 0.7}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.5}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"Major 11th", {{"Major", 0.3}, {"Minor", 0.6}, {"Diminished", 0.9}, {"Augmented", 1.0}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.5}, {"Major 7th", 0.1}, {"Diminished 7th", 1.0}, {"Minor Major 7th", 0.6}, {"6th", 0.3}, {"Minor 6th", 0.5}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.6}, {"9th", 0.3}, {"Minor 9th", 0.5}, {"Major 9th", 0.2}, {"11th", 0.1}, {"Minor 11th", 0.6}, {"Major 11th", 0.0}, {"13th", 0.1}, {"Minor 13th", 0.5}, {"Major 13th", 0.1}, {"Dominant 9th", 0.3}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 1.1}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.8}, {"Half Diminished 7th", 0.7}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.6}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 0.5}}},
+                {"13th", {{"Major", 0.5}, {"Minor", 0.6}, {"Diminished", 0.8}, {"Augmented", 0.9}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.6}, {"Dominant 7th", 0.3}, {"Major 7th", 0.3}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.4}, {"Minor 6th", 0.6}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.5}, {"9th", 0.4}, {"Minor 9th", 0.5}, {"Major 9th", 0.3}, {"11th", 0.2}, {"Minor 11th", 0.5}, {"Major 11th", 0.1}, {"13th", 0.0}, {"Minor 13th", 0.3}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.2}, {"Minor 7th Flat 5", 0.6}, {"Half Diminished 7th", 0.7}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
+                {"Minor 13th", {{"Major", 0.7}, {"Minor", 0.2}, {"Diminished", 0.5}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.2}, {"Dominant 7th", 0.4}, {"Major 7th", 0.5}, {"Diminished 7th", 0.5}, {"Minor Major 7th", 0.1}, {"6th", 0.6}, {"Minor 6th", 0.2}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.1}, {"9th", 0.4}, {"Minor 9th", 0.1}, {"Major 9th", 0.5}, {"11th", 0.3}, {"Minor 11th", 0.1}, {"Major 11th", 0.6}, {"13th", 0.3}, {"Minor 13th", 0.0}, {"Major 13th", 0.7}, {"Dominant 9th", 0.4}, {"Diminished 9th", 0.5}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.3}, {"Minor 7th Flat 5", 0.3}, {"Half Diminished 7th", 0.4}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.3}, {"Diminished 11th", 0.5}, {"Major 13th Flat 9", 0.7}}},
+                {"Major 13th", {{"Major", 0.3}, {"Minor", 0.7}, {"Diminished", 1.0}, {"Augmented", 1.1}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.2}, {"Minor 7th", 0.8}, {"Dominant 7th", 0.5}, {"Major 7th", 0.1}, {"Diminished 7th", 1.1}, {"Minor Major 7th", 0.7}, {"6th", 0.3}, {"Minor 6th", 0.5}, {"Major Add 9", 0.2}, {"Minor Add 9", 0.6}, {"9th", 0.3}, {"Minor 9th", 0.5}, {"Major 9th", 0.2}, {"11th", 0.1}, {"Minor 11th", 0.6}, {"Major 11th", 0.1}, {"13th", 0.1}, {"Minor 13th", 0.5}, {"Major 13th", 0.0}, {"Dominant 9th", 0.3}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 1.1}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.8}, {"Half Diminished 7th", 0.7}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.6}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 0.5}}},
+                {"Dominant 9th", {{"Major", 0.4}, {"Minor", 0.5}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.1}, {"Major 7th", 0.2}, {"Diminished 7th", 0.7}, {"Minor Major 7th", 0.5}, {"6th", 0.5}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.2}, {"Minor 9th", 0.4}, {"Major 9th", 0.1}, {"11th", 0.2}, {"Minor 11th", 0.4}, {"Major 11th", 0.3}, {"13th", 0.2}, {"Minor 13th", 0.4}, {"Major 13th", 0.1}, {"Dominant 9th", 0.0}, {"Diminished 9th", 0.7}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.2}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.3}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.6}}},
+                {"Diminished 9th", {{"Major", 0.8}, {"Minor", 0.6}, {"Diminished", 0.1}, {"Augmented", 0.9}, {"Suspended 2nd", 0.7}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.7}, {"Major 7th", 0.8}, {"Diminished 7th", 0.0}, {"Minor Major 7th", 0.5}, {"6th", 0.9}, {"Minor 6th", 0.6}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.6}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.9}, {"11th", 0.7}, {"Minor 11th", 0.4}, {"Major 11th", 1.0}, {"13th", 0.9}, {"Minor 13th", 0.5}, {"Major 13th", 1.0}, {"Dominant 9th", 0.8}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.9}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 0.9}}},
+                {"Augmented Major 7th", {{"Major", 0.9}, {"Minor", 0.8}, {"Diminished", 1.0}, {"Augmented", 0.1}, {"Suspended 2nd", 0.8}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.8}, {"Major 7th", 0.9}, {"Diminished 7th", 1.0}, {"Minor Major 7th", 0.8}, {"6th", 1.0}, {"Minor 6th", 0.8}, {"Major Add 9", 0.9}, {"Minor Add 9", 0.8}, {"9th", 0.8}, {"Minor 9th", 0.7}, {"Major 9th", 1.0}, {"11th", 0.9}, {"Minor 11th", 0.8}, {"Major 11th", 1.1}, {"13th", 1.0}, {"Minor 13th", 0.7}, {"Major 13th", 1.1}, {"Dominant 9th", 0.8}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 0.0}, {"Dominant 13th", 1.0}, {"Minor 7th Flat 5", 0.8}, {"Half Diminished 7th", 0.9}, {"6/9", 1.0}, {"Minor 11th Flat 5", 0.7}, {"Diminished 11th", 1.0}, {"Major 13th Flat 9", 1.1}}},
+                {"Dominant 13th", {{"Major", 0.6}, {"Minor", 0.5}, {"Diminished", 0.8}, {"Augmented", 0.9}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.5}, {"Dominant 7th", 0.3}, {"Major 7th", 0.4}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.4}, {"Minor 6th", 0.5}, {"Major Add 9", 0.4}, {"Minor Add 9", 0.5}, {"9th", 0.4}, {"Minor 9th", 0.5}, {"Major 9th", 0.3}, {"11th", 0.2}, {"Minor 11th", 0.5}, {"Major 11th", 0.1}, {"13th", 0.2}, {"Minor 13th", 0.3}, {"Major 13th", 0.1}, {"Dominant 9th", 0.2}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.0}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.5}, {"Diminished 11th", 0.8}, {"Major 13th Flat 9", 0.6}}},
+                {"Minor 7th Flat 5", {{"Major", 0.6}, {"Minor", 0.3}, {"Diminished", 0.2}, {"Augmented", 0.7}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.4}, {"Major 7th", 0.6}, {"Diminished 7th", 0.2}, {"Minor Major 7th", 0.3}, {"6th", 0.5}, {"Minor 6th", 0.3}, {"Major Add 9", 0.6}, {"Minor Add 9", 0.3}, {"9th", 0.5}, {"Minor 9th", 0.3}, {"Major 9th", 0.7}, {"11th", 0.4}, {"Minor 11th", 0.3}, {"Major 11th", 0.8}, {"13th", 0.6}, {"Minor 13th", 0.3}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.2}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.0}, {"Half Diminished 7th", 0.1}, {"6/9", 0.5}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.2}, {"Major 13th Flat 9", 0.9}}},
+                {"Half Diminished 7th", {{"Major", 0.5}, {"Minor", 0.4}, {"Diminished", 0.1}, {"Augmented", 0.8}, {"Suspended 2nd", 0.4}, {"Suspended 4th", 0.3}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.3}, {"Major 7th", 0.5}, {"Diminished 7th", 0.1}, {"Minor Major 7th", 0.4}, {"6th", 0.6}, {"Minor 6th", 0.4}, {"Major Add 9", 0.5}, {"Minor Add 9", 0.4}, {"9th", 0.6}, {"Minor 9th", 0.4}, {"Major 9th", 0.7}, {"11th", 0.5}, {"Minor 11th", 0.4}, {"Major 11th", 0.8}, {"13th", 0.7}, {"Minor 13th", 0.4}, {"Major 13th", 0.9}, {"Dominant 9th", 0.6}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 0.9}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.1}, {"Half Diminished 7th", 0.0}, {"6/9", 0.6}, {"Minor 11th Flat 5", 0.1}, {"Diminished 11th", 0.1}, {"Major 13th Flat 9", 1.0}}},
+                {"6/9", {{"Major", 0.3}, {"Minor", 0.4}, {"Diminished", 0.7}, {"Augmented", 0.8}, {"Suspended 2nd", 0.3}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.5}, {"Major 7th", 0.2}, {"Diminished 7th", 0.9}, {"Minor Major 7th", 0.5}, {"6th", 0.2}, {"Minor 6th", 0.4}, {"Major Add 9", 0.3}, {"Minor Add 9", 0.4}, {"9th", 0.3}, {"Minor 9th", 0.4}, {"Major 9th", 0.2}, {"11th", 0.4}, {"Minor 11th", 0.3}, {"Major 11th", 0.3}, {"13th", 0.4}, {"Minor 13th", 0.4}, {"Major 13th", 0.3}, {"Dominant 9th", 0.3}, {"Diminished 9th", 0.9}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.4}, {"Minor 7th Flat 5", 0.5}, {"Half Diminished 7th", 0.6}, {"6/9", 0.0}, {"Minor 11th Flat 5", 0.4}, {"Diminished 11th", 0.7}, {"Major 13th Flat 9", 0.8}}},
+                {"Minor 11th Flat 5", {{"Major", 0.7}, {"Minor", 0.3}, {"Diminished", 0.2}, {"Augmented", 0.6}, {"Suspended 2nd", 0.5}, {"Suspended 4th", 0.4}, {"Minor 7th", 0.3}, {"Dominant 7th", 0.4}, {"Major 7th", 0.5}, {"Diminished 7th", 0.2}, {"Minor Major 7th", 0.3}, {"6th", 0.6}, {"Minor 6th", 0.3}, {"Major Add 9", 0.5}, {"Minor Add 9", 0.3}, {"9th", 0.5}, {"Minor 9th", 0.3}, {"Major 9th", 0.7}, {"11th", 0.4}, {"Minor 11th", 0.3}, {"Major 11th", 0.8}, {"13th", 0.6}, {"Minor 13th", 0.3}, {"Major 13th", 0.8}, {"Dominant 9th", 0.5}, {"Diminished 9th", 0.2}, {"Augmented Major 7th", 0.8}, {"Dominant 13th", 0.5}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.4}, {"Minor 11th Flat 5", 0.0}, {"Diminished 11th", 0.2}, {"Major 13th Flat 9", 0.9}}},
+                {"Diminished 11th", {{"Major", 0.8}, {"Minor", 0.6}, {"Diminished", 0.1}, {"Augmented", 0.9}, {"Suspended 2nd", 0.7}, {"Suspended 4th", 0.6}, {"Minor 7th", 0.4}, {"Dominant 7th", 0.7}, {"Major 7th", 0.8}, {"Diminished 7th", 0.0}, {"Minor Major 7th", 0.5}, {"6th", 0.9}, {"Minor 6th", 0.6}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.6}, {"9th", 0.7}, {"Minor 9th", 0.5}, {"Major 9th", 0.9}, {"11th", 0.6}, {"Minor 11th", 0.4}, {"Major 11th", 0.9}, {"13th", 0.8}, {"Minor 13th", 0.5}, {"Major 13th", 1.0}, {"Dominant 9th", 0.7}, {"Diminished 9th", 0.1}, {"Augmented Major 7th", 1.0}, {"Dominant 13th", 0.8}, {"Minor 7th Flat 5", 0.2}, {"Half Diminished 7th", 0.1}, {"6/9", 0.7}, {"Minor 11th Flat 5", 0.2}, {"Diminished 11th", 0.0}, {"Major 13th Flat 9", 0.9}}},
+                {"Major 13th Flat 9", {{"Major", 0.6}, {"Minor", 0.8}, {"Diminished", 0.9}, {"Augmented", 1.0}, {"Suspended 2nd", 0.8}, {"Suspended 4th", 0.7}, {"Minor 7th", 0.7}, {"Dominant 7th", 0.6}, {"Major 7th", 0.5}, {"Diminished 7th", 1.0}, {"Minor Major 7th", 0.7}, {"6th", 0.8}, {"Minor 6th", 0.7}, {"Major Add 9", 0.8}, {"Minor Add 9", 0.7}, {"9th", 0.6}, {"Minor 9th", 0.7}, {"Major 9th", 0.5}, {"11th", 0.7}, {"Minor 11th", 0.7}, {"Major 11th", 0.8}, {"13th", 0.6}, {"Minor 13th", 0.7}, {"Major 13th", 0.5}, {"Dominant 9th", 0.6}, {"Diminished 9th", 1.0}, {"Augmented Major 7th", 1.1}, {"Dominant 13th", 0.6}, {"Minor 7th Flat 5", 0.9}, {"Half Diminished 7th", 1.0}, {"6/9", 0.8}, {"Minor 11th Flat 5", 0.9}, {"Diminished 11th", 0.9}, {"Major 13th Flat 9", 0.0}}},
+                {"Major", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"Minor", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Diminished", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
+                {"Augmented", {{"Add9", 0.6}, {"7sus4", 0.7}, {"Maj7#11", 0.8}, {"7b9", 0.9}, {"7#9", 1.0}, {"m7b9", 0.7}, {"7#5", 0.8}, {"mMaj7", 0.6}, {"m7#5", 0.7}, {"Maj9", 0.5}, {"7b13", 0.9}}},
+                {"Suspended 2nd", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
+                {"Suspended 4th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
+                {"Minor 7th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Dominant 7th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
+                {"Major 7th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Diminished 7th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
+                {"Minor Major 7th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"6th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
+                {"Minor 6th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Major Add 9", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
+                {"Minor Add 9", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"9th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"Minor 9th", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
+                {"Major 9th", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
+                {"11th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
+                {"Minor 11th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Major 11th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"13th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
+                {"Minor 13th", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Major 13th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"Dominant 9th", {{"Add9", 0.4}, {"7sus4", 0.5}, {"Maj7#11", 0.6}, {"7b9", 0.7}, {"7#9", 0.8}, {"m7b9", 0.5}, {"7#5", 0.6}, {"mMaj7", 0.4}, {"m7#5", 0.5}, {"Maj9", 0.3}, {"7b13", 0.7}}},
+                {"Diminished 9th", {{"Add9", 0.6}, {"7sus4", 0.7}, {"Maj7#11", 0.8}, {"7b9", 0.9}, {"7#9", 1.0}, {"m7b9", 0.7}, {"7#5", 0.8}, {"mMaj7", 0.6}, {"m7#5", 0.7}, {"Maj9", 0.5}, {"7b13", 0.9}}},
+                {"Augmented Major 7th", {{"Add9", 0.7}, {"7sus4", 0.8}, {"Maj7#11", 0.9}, {"7b9", 1.0}, {"7#9", 1.1}, {"m7b9", 0.8}, {"7#5", 0.9}, {"mMaj7", 0.7}, {"m7#5", 0.8}, {"Maj9", 0.6}, {"7b13", 1.0}}},
+                {"Dominant 13th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
+                {"Minor 7th Flat 5", {{"Add9", 0.2}, {"7sus4", 0.3}, {"Maj7#11", 0.4}, {"7b9", 0.5}, {"7#9", 0.6}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.1}, {"7b13", 0.6}}},
+                {"Half Diminished 7th", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"6/9", {{"Add9", 0.1}, {"7sus4", 0.2}, {"Maj7#11", 0.3}, {"7b9", 0.4}, {"7#9", 0.5}, {"m7b9", 0.3}, {"7#5", 0.4}, {"mMaj7", 0.2}, {"m7#5", 0.3}, {"Maj9", 0.1}, {"7b13", 0.5}}},
+                {"Minor 11th Flat 5", {{"Add9", 0.3}, {"7sus4", 0.4}, {"Maj7#11", 0.5}, {"7b9", 0.6}, {"7#9", 0.7}, {"m7b9", 0.4}, {"7#5", 0.5}, {"mMaj7", 0.3}, {"m7#5", 0.4}, {"Maj9", 0.2}, {"7b13", 0.7}}},
+                {"Diminished 11th", {{"Add9", 0.5}, {"7sus4", 0.6}, {"Maj7#11", 0.7}, {"7b9", 0.8}, {"7#9", 0.9}, {"m7b9", 0.6}, {"7#5", 0.7}, {"mMaj7", 0.5}, {"m7#5", 0.6}, {"Maj9", 0.4}, {"7b13", 0.8}}},
+                {"Major 13th Flat 9", {{"Add9", 0.6}, {"7sus4", 0.7}, {"Maj7#11", 0.8}, {"7b9", 0.9}, {"7#9", 1.0}, {"m7b9", 0.7}, {"7#5", 0.8}, {"mMaj7", 0.6}, {"m7#5", 0.7}, {"Maj9", 0.5}, {"7b13", 0.9}}}
 
-        }; 
+        };
 
         auto it1 = tensionValues.find(chord1);
         if (it1 != tensionValues.end()) {
@@ -1371,23 +1370,26 @@ private:
 
         return 1.0;
     }
-}; 
+};
 
-//anger's method more stable
 class HighResolutionTimer {
 private:
     static constexpr uint64_t FREQUENCY = 1'000'000'000ULL;
-    std::atomic<int64_t> offset{ 0 };
-    std::atomic<uint64_t> start_time{ 0 };
+    alignas(64) std::atomic<int64_t> offset;
+    alignas(64) std::atomic<uint64_t> start_time;
     const double frequency_multiplier;
-    std::atomic<int64_t> average_overshoot{ 1000 };
-    static constexpr int BUFFER_SIZE = 8;
-    std::array<std::atomic<int64_t>, BUFFER_SIZE> overshoot_buffer;
-    std::atomic<int> buffer_index{ 0 };
-    static constexpr int CALIBRATION_ROUNDS = 20;
+    alignas(64) std::atomic<int64_t> average_overshoot;
+    static constexpr int BUFFER_SIZE = 16;
+    alignas(64) std::array<std::atomic<int64_t>, BUFFER_SIZE> overshoot_buffer;
+    std::atomic<int> buffer_index;
+    static constexpr int CALIBRATION_ROUNDS = 32;
 
 public:
-    HighResolutionTimer() :
+    HighResolutionTimer() noexcept :
+        offset(0),
+        start_time(0),
+        average_overshoot(1000),
+        buffer_index(0),
         frequency_multiplier(static_cast<double>(FREQUENCY) / static_cast<double>(performanceFrequency())) {
         for (auto& a : overshoot_buffer) {
             a.store(0, std::memory_order_relaxed);
@@ -1395,37 +1397,36 @@ public:
         calibrate();
     }
 
-    void start() noexcept {
-        LARGE_INTEGER li;
-        QueryPerformanceCounter(&li);
-        start_time.store(li.QuadPart, std::memory_order_relaxed);
+    __forceinline void start() noexcept {
+        start_time.store(__rdtsc(), std::memory_order_relaxed);
     }
 
-    std::chrono::nanoseconds elapsed() const noexcept {
-        LARGE_INTEGER li;
-        QueryPerformanceCounter(&li);
-        return std::chrono::nanoseconds(static_cast<int64_t>((li.QuadPart - start_time.load(std::memory_order_relaxed)) * frequency_multiplier) + offset.load(std::memory_order_relaxed));
+    [[nodiscard]] __forceinline std::chrono::nanoseconds elapsed() const noexcept {
+        uint64_t end = __rdtsc();
+        return std::chrono::nanoseconds(static_cast<int64_t>((end - start_time.load(std::memory_order_relaxed)) * frequency_multiplier) + offset.load(std::memory_order_relaxed));
     }
 
-    void sleep_until(std::chrono::nanoseconds target_time) noexcept {
-        constexpr std::chrono::nanoseconds SPIN_THRESHOLD(10000);
+    __forceinline void sleep_until(std::chrono::nanoseconds target_time) noexcept {
+        constexpr std::chrono::nanoseconds SPIN_THRESHOLD(5000);
 
         auto current_time = elapsed();
         auto sleep_duration = target_time - current_time - std::chrono::nanoseconds(average_overshoot.load(std::memory_order_relaxed));
 
         if (sleep_duration > SPIN_THRESHOLD) {
+            _mm_pause();
             std::this_thread::sleep_for(sleep_duration - SPIN_THRESHOLD);
         }
 
         while (elapsed() < target_time) {
             _mm_pause();
+            _mm_prefetch((char*)&target_time, _MM_HINT_T0);
         }
 
         auto actual_time = elapsed();
         record_overshoot(actual_time - target_time);
     }
 
-    void adjust(std::chrono::nanoseconds adjustment) noexcept {
+    __forceinline void adjust(std::chrono::nanoseconds adjustment) noexcept {
         offset.fetch_add(adjustment.count(), std::memory_order_relaxed);
     }
 
@@ -1446,13 +1447,13 @@ private:
         update_average_overshoot();
     }
 
-    void record_overshoot(std::chrono::nanoseconds overshoot) noexcept {
+    __forceinline void record_overshoot(std::chrono::nanoseconds overshoot) noexcept {
         int index = buffer_index.fetch_add(1, std::memory_order_relaxed) % BUFFER_SIZE;
         overshoot_buffer[index].store(overshoot.count(), std::memory_order_relaxed);
         update_average_overshoot();
     }
 
-    void update_average_overshoot() noexcept {
+    __forceinline void update_average_overshoot() noexcept {
         int64_t sum = 0;
         for (const auto& a : overshoot_buffer) {
             sum += a.load(std::memory_order_relaxed);
@@ -1462,7 +1463,7 @@ private:
 };
 class alignas(64) NoteEventPool {
 private:
-    static constexpr size_t BLOCK_SIZE = 1024 * 1024; 
+    static constexpr size_t BLOCK_SIZE = 1024 * 1024;
 
     struct alignas(CACHE_LINE_SIZE) Block {
         char data[BLOCK_SIZE];
@@ -1519,285 +1520,310 @@ private:
         end = current + BLOCK_SIZE;
     }
 };
-class AdaptiveTimer {
-private:
-    HighResolutionTimer timer;
-    Duration offset{ Duration::zero() };
-    double adjustment_factor{ 1.0 };
-    static constexpr int ADJUSTMENT_INTERVAL = 50;
-    int event_count{ 0 };
-    std::atomic<Duration> last_sleep_time;
-    Duration last_event_time{ Duration::zero() };
-    std::array<double, ADJUSTMENT_INTERVAL> error_history;
-    size_t error_history_index{ 0 };
-    std::atomic<bool> eightyEightKeyModeActive{ false };
 
-public:
-    inline void start() noexcept {
-        timer.start();
-        offset = Duration::zero();
-        adjustment_factor = 1.0;
-        event_count = 0;
-        last_sleep_time.store(Duration::zero());
-        last_event_time = Duration::zero();
-        error_history.fill(0.0);
-        error_history_index = 0;
-    }
-
-    inline Duration elapsed() const noexcept {
-        return timer.elapsed() + offset;
-    }
-
-    inline void adjust(Duration expected, Duration actual) noexcept {
-        event_count++;
-        auto difference = actual - expected;
-        double error = std::chrono::duration<double>(difference).count();
-        error_history[error_history_index] = error;
-        error_history_index = (error_history_index + 1) % ADJUSTMENT_INTERVAL;
-
-        if (event_count % ADJUSTMENT_INTERVAL == 0) {
-            double avg_error = std::accumulate(error_history.begin(), error_history.end(), 0.0) / ADJUSTMENT_INTERVAL;
-            adjustment_factor = std::clamp(adjustment_factor * (1.0 - avg_error * 0.1), 0.99, 1.01);
-            offset += std::chrono::duration_cast<Duration>(difference / 4);
-        }
-        last_event_time = actual;
-    }
-
-    inline void sleep_until(Duration target_time) noexcept {
-        auto current_time = elapsed();
-        auto sleep_duration = target_time - current_time;
-
-        if (sleep_duration > Duration::zero()) {
-            auto adjusted_sleep_duration = std::chrono::duration_cast<Duration>(
-                std::chrono::duration<double>(sleep_duration) * adjustment_factor
-            );
-            last_sleep_time.store(adjusted_sleep_duration);
-
-            // Busy-wait until the target time
-            while (elapsed() < target_time) {
-                _mm_pause();  // Reduces power consumption and prevents pipeline stalls
-            }
-        }
-    }
-
-    inline Duration get_last_sleep_time() const noexcept {
-        return last_sleep_time.load();
-    }
-};
 class VirtualPianoPlayer {
-    TransposeSuggestion detector;
-    TimePoint last_adjustment_time;
-    AdaptiveTimer adaptive_timer;
-    HighResolutionTimer timer;
-    NoteEventPool event_pool;
-    WORD sustain_key_code;
-    WORD volume_up_key_code;
-    WORD volume_down_key_code;
-    std::array<int, 128> volume_lookup;
-    std::array<int, 128> arrow_key_presses;
-    std::atomic<int> current_volume{ config.volume.INITIAL_VOLUME };
-    std::atomic<int> max_volume{ config.volume.MAX_VOLUME };
-    std::atomic<int> current_transpose{ 0 };
-    std::atomic<bool> enable_transpose_adjustment{ false };
-    std::atomic<bool> should_stop{ false };
-    std::atomic<bool> enable_volume_adjustment{ false };
-    std::atomic<int> active_keys{ 0 };
-    std::atomic<size_t> buffer_index{ 0 };
-    std::atomic<bool> extendedModeActive{ false };
-    std::atomic<bool> paused{ true };
-    std::atomic<bool> enable_auto_transpose{ false };
-    std::atomic<bool> eightyEightKeyModeActive{ false };
-    alignas(CACHE_LINE_SIZE) moodycamel::ConcurrentQueue<NoteEvent> event_queue;
-    alignas(CACHE_LINE_SIZE) std::vector<NoteEvent*> note_buffer;
-    std::unordered_map<std::string, std::atomic<bool>> pressed_keys;
-    std::mutex buffer_mutex;
+
+    // Atomic variables
+    alignas(64) std::atomic<bool> should_stop{ false }, paused{ true }, playback_started{ false },
+        is_adjusting_playback{ false }, midiFileSelected{ false },
+        enable_volume_adjustment{ false }, eightyEightKeyModeActive{ true },
+        skip_rewind_requested{ false }, skip_rewind_completed{ false };
+    alignas(64) std::atomic<size_t> buffer_index{ 0 };
+    alignas(64) std::atomic<int> current_volume, max_volume{ 0 };
+    std::atomic<std::chrono::nanoseconds> skip_rewind_amount{ Duration::zero() };
+    std::atomic<bool> skip_occurred{ false };
+    std::atomic<Duration> skip_end_time{ Duration::zero() };
+
+    // Time-related members
+    alignas(64) TimePoint playback_start_time, last_resume_time, adjustment_start_time, last_adjustment_time;
+    alignas(64) Duration total_adjusted_time { Duration::zero() };
+    static constexpr Duration ADJUSTMENT_DURATION{ std::chrono::milliseconds(500) };
+
+    // AVX constants
+    const __m256d AVX_ONE = _mm256_set1_pd(1.0);
+    const __m256d AVX_HALF = _mm256_set1_pd(0.5);
+
+    // Other members
+    double current_speed{ 1.0 };
+    bool isSustainPressed{ false };
+    WORD sustain_key_code, volume_up_key_code, volume_down_key_code;
+    std::array<int, 128> volume_lookup, arrow_key_presses;
+    alignas(64) std::vector<NoteEvent*> note_buffer;
+
     std::vector<std::tuple<double, std::string, std::string, int>> note_events;
     std::vector<std::pair<double, double>> tempo_changes;
     std::vector<TimeSignature> timeSignatures;
-    std::unique_ptr<std::thread> playback_thread;
-    std::map<std::string, std::string> limited_key_mappings;
-    std::map<std::string, std::string> full_key_mappings;
+    std::unordered_map<std::string, std::atomic<bool>> pressed_keys;
+    std::map<std::string, std::string> limited_key_mappings, full_key_mappings;
     std::map<int, std::function<void()>> controls;
+
+    // Synchronization primitives
+    std::mutex buffer_mutex, inputMutex, cv_m, skip_rewind_mutex;
+    std::condition_variable cv, skip_rewind_cv;
+
+    // Utility objects
+    TransposeSuggestion detector;
+    HighResolutionTimer timer;
+    NoteEventPool event_pool;
+    std::unique_ptr<std::jthread> playback_thread;
     std::thread listener_thread;
-    std::mutex inputMutex;
-    std::mutex cv_m;
-    const double default_tempo = 500000;
-    std::condition_variable cv;
-    std::chrono::steady_clock::time_point playback_start_time;
-    std::chrono::steady_clock::time_point last_resume_time;
-    std::chrono::nanoseconds total_adjusted_time{ 0 };
-    std::atomic<bool> midiFileSelected{ false };
-    std::atomic<bool> use_adaptive_timer{ false };
-    double current_speed{ 1.0 };
-    std::chrono::nanoseconds skip_offset{ 0 };
-    std::atomic<bool> is_skipping{ false };
-    std::atomic<bool> is_rewinding{ false };
-    std::atomic<std::chrono::nanoseconds> rewind_target = Duration::zero();
-    std::atomic<bool> use_adaptive = false;
-    std::condition_variable skip_cv;
-    bool isSustainPressed = false;
-    std::atomic<bool> playback_started{ false };
-
-
 public:
+    bool checkVCRedistVersion() {
+        DWORD dwType = 0;
+        DWORD dwSize = 0;
+        const char* subkey = "SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64";
+        const char* value = "Version";
+
+        if (RegGetValueA(HKEY_LOCAL_MACHINE, subkey, value, RRF_RT_REG_SZ, &dwType, nullptr, &dwSize) == ERROR_SUCCESS) {
+            std::string version(dwSize, '\0');
+            if (RegGetValueA(HKEY_LOCAL_MACHINE, subkey, value, RRF_RT_REG_SZ, &dwType, &version[0], &dwSize) == ERROR_SUCCESS) {
+                version.resize(strlen(version.c_str()));
+                if (version >= "14.30") {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool checkAVX2Support() {
+        int cpuInfo[4];
+        __cpuid(cpuInfo, 0);
+        int nIds = cpuInfo[0];
+
+        if (nIds >= 7) {
+            __cpuidex(cpuInfo, 7, 0);
+            return (cpuInfo[1] & (1 << 5)) != 0;
+        }
+        return false;
+    }
+
     VirtualPianoPlayer() noexcept
         : last_adjustment_time(Clock::now()) {
-        loadConfig();
+        if (!checkVCRedistVersion()) {
+            throw std::runtime_error("Required Visual C++ Redistributable (2022 or newer) is not installed. Please download and install the latest version from Microsoft's website.");
+        }
+        if (!checkAVX2Support()) {
+            throw std::runtime_error("This program requires a CPU with AVX2 support. Your CPU does not support AVX2 instructions.");
+        }
+
+        try {
+            loadConfig();
+        }
+        catch (const std::exception& e) {
+            handleConfigError(e);
+        }
         precompute_volume_adjustments();
         auto [limited, full] = define_key_mappings();
         limited_key_mappings = std::move(limited);
         full_key_mappings = std::move(full);
         controls = define_controls();
-        note_buffer.reserve(1 << 20);  
+        note_buffer.reserve(1 << 20);
 
-        sustain_key_code = stringToVK(config.hotkeys.SUSTAIN_KEY);
-        volume_up_key_code = vkToScanCode(stringToVK(config.hotkeys.VOLUME_UP_KEY));
-        volume_down_key_code = vkToScanCode(stringToVK(config.hotkeys.VOLUME_DOWN_KEY));
-    }
-
-
-    __forceinline Duration get_adjusted_time() const noexcept {
-        auto now = Clock::now();
-        __assume(current_speed > 0);
-        if (!playback_started.load(std::memory_order_relaxed)) [[unlikely]]  {
-            return Duration::zero();
+        try {
+            sustain_key_code = stringToVK(config.hotkeys.SUSTAIN_KEY);
+            volume_up_key_code = vkToScanCode(stringToVK(config.hotkeys.VOLUME_UP_KEY));
+            volume_down_key_code = vkToScanCode(stringToVK(config.hotkeys.VOLUME_DOWN_KEY));
         }
-        return total_adjusted_time + skip_offset + std::chrono::duration_cast<Duration>((now - last_resume_time) * current_speed);
-    }
+        catch (const std::exception& e) {
+            throw std::runtime_error("Error mapping hotkeys: " + std::string(e.what()));
+        }
 
-    __forceinline void start_timer() noexcept {
-        if (!use_adaptive_timer.load(std::memory_order_relaxed)) [[likely]] {
-            timer.start();
+        if (sustain_key_code == 0 || volume_up_key_code == 0 || volume_down_key_code == 0) {
+            throw std::runtime_error("Invalid hotkey configuration. Please check your config file.");
+        }
+    }
+    ~VirtualPianoPlayer() {
+        should_stop.store(true, std::memory_order_release);
+
+        if (playback_thread && playback_thread->joinable()) {
+            playback_thread->join();
+        }
+
+        if (listener_thread.joinable()) {
+            listener_thread.join();
+        }
+    }
+    void handleConfigError(const std::exception& e) {
+        std::cerr << "Configuration error: " << e.what() << std::endl;
+        std::cerr << "Using default settings." << std::endl;
+        setDefaultConfig();
+        Sleep(2200);
+    }
+    struct InputEvent {
+        std::vector<INPUT> inputs;
+    };
+
+    [[nodiscard]] Duration get_adjusted_time() noexcept {
+        TimePoint now = std::chrono::steady_clock::now();
+        Duration elapsed = now - last_resume_time;
+
+        if (is_adjusting_playback.load(std::memory_order_relaxed)) {
+            elapsed = handle_playback_adjustment(now, elapsed);
+        }
+
+        //faster multiplication
+        __m256d avx_elapsed = _mm256_set1_pd(elapsed.count());
+        __m256d avx_speed = _mm256_set1_pd(current_speed);
+        __m256d avx_result = _mm256_mul_pd(avx_elapsed, avx_speed);
+        long double adjusted_elapsed = (long double)_mm256_cvtsd_f64(avx_result);
+
+        return total_adjusted_time + Duration(static_cast<Duration::rep>(adjusted_elapsed));
+    }
+    [[nodiscard]] Duration handle_playback_adjustment(TimePoint now, Duration elapsed) noexcept {
+        Duration adjustment_elapsed = std::chrono::duration_cast<Duration>(now - adjustment_start_time);
+        if (adjustment_elapsed >= ADJUSTMENT_DURATION) {
+            is_adjusting_playback.store(false, std::memory_order_release);
         }
         else {
-            adaptive_timer.start();
+            //faster calculations
+            __m256d avx_progress = _mm256_set1_pd(static_cast<double>(adjustment_elapsed.count()) / ADJUSTMENT_DURATION.count());
+            __m256d avx_inverse_progress = _mm256_sub_pd(AVX_ONE, avx_progress);
+            __m256d avx_speed_factor = _mm256_add_pd(AVX_ONE, _mm256_mul_pd(avx_inverse_progress, AVX_HALF));
+
+            double speed_factor = _mm256_cvtsd_f64(avx_speed_factor);
+
+            elapsed = Duration(static_cast<Duration::rep>(elapsed.count() * speed_factor));
         }
+        return elapsed;
     }
-
-    __forceinline void sleep_until(Duration target_time) noexcept {
-        if (!use_adaptive_timer.load(std::memory_order_relaxed)) [[likely]] {
-            timer.sleep_until(target_time);
-        }
-        else {
-            adaptive_timer.sleep_until(target_time);
-        }
-    }
-
-    __forceinline Duration get_elapsed() const noexcept {
-        return !use_adaptive_timer.load(std::memory_order_relaxed) ?
-            timer.elapsed() : adaptive_timer.elapsed();
-    }
-
-
-    __declspec(noinline) void play_notes() {
+    void play_notes() {
         prepare_event_queue();
-        start_timer();
+        timer.start();
 
-        if (!playback_started.load(std::memory_order_relaxed)) {
+        if (!playback_started.load(std::memory_order_acquire)) {
             playback_start_time = std::chrono::steady_clock::now();
             last_resume_time = playback_start_time;
-            playback_started.store(true, std::memory_order_relaxed);
+            playback_started.store(true, std::memory_order_release);
         }
-
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
         const size_t buffer_size = note_buffer.size();
-        size_t buffer_index = 0;
+        size_t current_index = 0;
 
-        while (!should_stop.load(std::memory_order_relaxed)) {
-            if (paused.load(std::memory_order_relaxed)) {
-                handle_pause();
-                continue;
-            }
+        __m256d current_speed_vec = _mm256_set1_pd(current_speed);
 
-            auto adjusted_time = get_adjusted_time();
-            if (handle_skip_rewind(adjusted_time, buffer_index)) continue;
+        while (!should_stop.load(std::memory_order_acquire)) [[likely]] {
+            if (!paused.load(std::memory_order_acquire)) [[likely]] {
+                Duration adjusted_time = get_adjusted_time();
 
-            const size_t events_to_process = process_events(adjusted_time, buffer_index, buffer_size);
-            buffer_index += events_to_process;
+                if (skip_occurred.load(std::memory_order_acquire)) [[unlikely]] {
+                    Duration skip_end = skip_end_time.load(std::memory_order_acquire);
+                    while (current_index < buffer_size && note_buffer[current_index]->time <= skip_end) {
+                        ++current_index;
+                    }
+                    skip_occurred.store(false, std::memory_order_release);
+                    adjusted_time = std::max(adjusted_time, skip_end);
+                    }
+                    if (current_index < buffer_size) [[likely]] {
+                        if (note_buffer[current_index]->time > adjusted_time) [[unlikely]] {
+                            current_index = avx_binary_search_index(adjusted_time, current_index);
+                            }
 
-            if (buffer_index < buffer_size) {
-                handle_sleep(adjusted_time, buffer_index);
-            }
+                        size_t events_to_process = process_events(adjusted_time, current_index, buffer_size);
+                        current_index += events_to_process;
+
+                        if (current_index < buffer_size) [[likely]] {
+                            Duration next_event_time = note_buffer[current_index]->time;
+                            __m256d time_diff = _mm256_sub_pd(_mm256_set1_pd(next_event_time.count()), _mm256_set1_pd(adjusted_time.count()));
+                            __m256d sleep_duration_vec = _mm256_div_pd(time_diff, current_speed_vec);
+                            double sleep_duration = _mm256_cvtsd_f64(sleep_duration_vec);
+
+                            if (sleep_duration > 0) [[likely]] {
+                                timer.sleep_until(timer.elapsed() + Duration(static_cast<Duration::rep>(sleep_duration)));
+                                }
+                            }
+                        }
+                    else {
+                        break;
+                    }
+                }
             else {
-                std::cout << "Playback Ended." << std::endl;
-                break;
+                handle_pause();
             }
-        }
+            }
     }
-
-    __forceinline void handle_pause() noexcept {
+    void handle_pause() noexcept {
         std::unique_lock<std::mutex> lock(cv_m);
         cv.wait(lock, [this]() {
             return !paused.load(std::memory_order_relaxed) || should_stop.load(std::memory_order_relaxed);
             });
-        if (should_stop.load(std::memory_order_relaxed)) return;
-        last_resume_time = std::chrono::steady_clock::now();
-    }
-
-    __forceinline bool handle_skip_rewind(Duration adjusted_time, size_t& buffer_index) noexcept {
-        if (is_skipping.load(std::memory_order_acquire) || is_rewinding.load(std::memory_order_acquire)) {
-            buffer_index = optimized_lower_bound(0, note_buffer.size(), adjusted_time);
-            is_skipping.store(false, std::memory_order_release);
-            is_rewinding.store(false, std::memory_order_release);
-            skip_cv.notify_all();
-            return true;
+        if (!should_stop.load(std::memory_order_relaxed)) {
+            last_resume_time = std::chrono::steady_clock::now();
         }
-        return false;
     }
+    size_t process_events(Duration adjusted_time, size_t start_index, size_t buffer_size) {
+        size_t events_processed = 0;
+        const __m256i adjusted_time_vec = _mm256_set1_epi64x(adjusted_time.count());
 
-    __forceinline size_t process_events(Duration adjusted_time, size_t buffer_index, size_t buffer_size) noexcept {
-        __assume(buffer_size >= buffer_index);
-        __assume(PREFETCH_DISTANCE > 0);
-        __assume(!note_buffer.empty());
-        const size_t events_to_process = std::min(
-            buffer_size - buffer_index,
-            static_cast<size_t>(optimized_lower_bound(buffer_index, buffer_size, adjusted_time) - buffer_index)
-        );
+        for (size_t i = start_index; i < buffer_size; i += 4) {
+            if (i + 4 <= buffer_size) {
+                __m256i event_times = _mm256_set_epi64x(
+                    note_buffer[i + 3]->time.count(),
+                    note_buffer[i + 2]->time.count(),
+                    note_buffer[i + 1]->time.count(),
+                    note_buffer[i]->time.count()
+                );
+                __m256i cmp_result = _mm256_cmpgt_epi64(adjusted_time_vec, event_times);
+                int mask = _mm256_movemask_epi8(cmp_result);
 
-        for (size_t i = 0; i < events_to_process; ++i) {
-            const auto& event = note_buffer[buffer_index + i];
-            if (!event->isSustain) {
-                execute_note_event(*event);
+                if (mask == 0) break;
+
+                for (int j = 0; j < 4; ++j) {
+                    if (mask & (0xF << (j * 8))) {
+                        execute_note_event(*note_buffer[i + j]);
+                        events_processed++;
+                    }
+                    else {
+                        return events_processed;
+                    }
+                }
             }
             else {
-                handle_sustain_event(*event);
-            }
-            if (use_adaptive_timer.load(std::memory_order_relaxed)) {
-                adaptive_timer.adjust(event->time, adjusted_time);
-            }
-            if (i + PREFETCH_DISTANCE < events_to_process) {
-                _mm_prefetch(reinterpret_cast<const char*>(note_buffer[buffer_index + i + PREFETCH_DISTANCE]), _MM_HINT_T0);
+                for (; i < buffer_size; ++i) {
+                    if (note_buffer[i] && note_buffer[i]->time <= adjusted_time) {
+                        execute_note_event(*note_buffer[i]);
+                        events_processed++;
+                    }
+                    else {
+                        break;
+                    }
+                }
             }
         }
 
-        return events_to_process;
+        return events_processed;
     }
-
-    __forceinline void handle_sleep(Duration adjusted_time, size_t buffer_index) noexcept {
-        __assume(buffer_index < note_buffer.size());
-        const auto next_event_time = note_buffer[buffer_index]->time;
-        auto sleep_duration = std::chrono::duration_cast<Duration>((next_event_time - adjusted_time) / current_speed);
-        if (sleep_duration > Duration::zero()) {
-            sleep_until(get_elapsed() + sleep_duration);
+    void handle_sleep(Duration adjusted_time, size_t buffer_index) noexcept {
+        if (buffer_index < note_buffer.size()) {
+            Duration next_event_time = note_buffer[buffer_index]->time;
+            auto sleep_duration = std::chrono::duration_cast<Duration>((next_event_time - adjusted_time) / current_speed);
+            if (sleep_duration > Duration::zero()) {
+                timer.sleep_until(timer.elapsed() + sleep_duration);
+            }
         }
     }
 
-    __forceinline size_t optimized_lower_bound(size_t start, size_t end, Duration target_time) const noexcept {
-        __assume(start <= end);
-        __assume(end <= note_buffer.size());
-        while (start < end) {
-            size_t mid = start + ((end - start) >> 1);
-            if (note_buffer[mid]->time <= target_time) {
-                start = mid + 1;
+    size_t avx_binary_search_index(Duration adjusted_time, size_t start_index) {
+        size_t left = 0;
+        size_t right = start_index;
+
+        __m256d target = _mm256_set1_pd(adjusted_time.count());
+
+        while (left < right) {
+            size_t mid = left + (right - left) / 2;
+            __m256d current = _mm256_set1_pd(note_buffer[mid]->time.count());
+            __m256d comparison = _mm256_cmp_pd(current, target, _CMP_LE_OQ);
+
+            if (_mm256_movemask_pd(comparison) == 0xF) {
+                left = mid + 1;
             }
             else {
-                end = mid;
+                right = mid;
             }
         }
-        return start;
-    }
 
+        return left;
+    }
     void calibrate_volume() {
         int max_possible_steps = (config.volume.MAX_VOLUME - config.volume.MIN_VOLUME) / config.volume.VOLUME_STEP;
         for (int i = 0; i < max_possible_steps; ++i) {
@@ -1810,6 +1836,7 @@ public:
 
         current_volume.store(config.volume.INITIAL_VOLUME);
     }
+
     void precompute_volume_adjustments() {
         for (int velocity = 0; velocity <= 127; ++velocity) {
             double weighted_avg_velocity = velocity;
@@ -1837,32 +1864,19 @@ public:
         }
 
         current_speed *= factor;
-        if (current_speed > 2.0) {
-            current_speed = 2.0;
-        }
-        else if (current_speed < 0.5) {
-            current_speed = 0.5;
-        }
-        if (fabs(current_speed - 1.0) < 0.05) {
+        current_speed = std::clamp(current_speed, 0.5, 2.0);
+        if (std::abs(current_speed - 1.0) < 0.05) {
             current_speed = 1.0;
         }
 
-        setcolor(ConsoleColor::Blue);
-        std::cout << "[SPEED] ";
-        setcolor(ConsoleColor::White);
-        std::cout << "Playback speed adjusted. New speed: ";
-        setcolor(ConsoleColor::Green);
-        std::cout << "x" << current_speed << std::endl;
-        setcolor(ConsoleColor::White);
+        std::cout << "[SPEED] Playback speed adjusted. New speed: x" << current_speed << std::endl;
         cv.notify_all();
     }
-
     void printCentered(const std::string& text, int width) {
         int padding = (width - text.size()) / 2;
         std::string paddingSpaces(padding, ' ');
         std::cout << paddingSpaces << text << std::endl;
     }
-
     void print_ascii_interface() {
         system("cls");
 
@@ -1930,7 +1944,7 @@ public:
 
         setcolor(ConsoleColor::Default);
         std::cout << "\n";
-        Sleep(2200); // I spent too much time on this lmfao
+        Sleep(2200); 
         system("cls");
     }
     void main() {
@@ -1941,99 +1955,111 @@ public:
             load_midi_file(midi_file_wpath);
             midiFileSelected.store(true);
         }
-        listener_thread.join();
+
+        if (listener_thread.joinable()) {
+            listener_thread.join();
+        }
     }
 
-    inline void KeyPress(const std::string& key, bool press) {
+    std::atomic<bool> ctrlPressed = false;
+    std::atomic<bool> shiftPressed = false;
+    void KeyPress(const std::string& key, bool press) {
         std::lock_guard<std::mutex> lock(inputMutex);
-        INPUT inputs[88] = { 0 };
-        int inputCount = 0;
+
+        std::vector<INPUT> inputs;
+        inputs.reserve(3); 
 
         bool shifted = isupper(key.back()) || std::ispunct(key.back());
         bool ctrl = key.find("ctrl+") != std::string::npos;
 
-        auto addInput = [&](WORD scanCode, DWORD flags) {
-            if (inputCount < 88) {
-                inputs[inputCount].type = INPUT_KEYBOARD;
-                inputs[inputCount].ki.wScan = scanCode;
-                inputs[inputCount].ki.dwFlags = flags;
-                inputCount++;
-            }
+        auto addInput = [&inputs](WORD scanCode, DWORD flags) {
+            INPUT input = { 0 };
+            input.type = INPUT_KEYBOARD;
+            input.ki.wScan = scanCode;
+            input.ki.dwFlags = flags;
+            inputs.push_back(input);
             };
 
-        if (ctrl) addInput(MapVirtualKey(VK_CONTROL, 0), KEYEVENTF_SCANCODE);
-        if (shifted) addInput(0x2A, KEYEVENTF_SCANCODE);
+        if (ctrl && !ctrlPressed.exchange(true)) {
+            addInput(MapVirtualKey(VK_CONTROL, MAPVK_VK_TO_VSC), KEYEVENTF_SCANCODE);
+        }
+
+        if (shifted && !shiftPressed.exchange(true)) {
+            addInput(0x2A, KEYEVENTF_SCANCODE);
+        }
 
         WORD vkCode = VkKeyScan(key.back());
-        BYTE scanCode = MapVirtualKey(LOBYTE(vkCode), 0);
+        BYTE scanCode = MapVirtualKey(LOBYTE(vkCode), MAPVK_VK_TO_VSC);
         addInput(scanCode, press ? KEYEVENTF_SCANCODE : (KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP));
 
-        if (shifted) addInput(0x2A, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP);
-        if (ctrl) addInput(MapVirtualKey(VK_CONTROL, 0), KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP);
+        if (shifted && shiftPressed.exchange(false)) {
+            addInput(0x2A, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP);
+        }
 
-        SendInput(inputCount, inputs, sizeof(INPUT));
+        if (ctrl && ctrlPressed.exchange(false)) {
+            addInput(MapVirtualKey(VK_CONTROL, MAPVK_VK_TO_VSC), KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP);
+        }
+
+        SendInput(inputs.size(), inputs.data(), sizeof(INPUT));
     }
 
-private: 
+private:
     std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> define_key_mappings() {
         return { config.key_mappings["LIMITED"], config.key_mappings["FULL"] };
     }
-
-    int stringToVK(const std::string& keyName) { //why not?
+    int stringToVK(const std::string& keyName) {
         static const std::unordered_map<std::string, int> keyMap = {
-            {"LBUTTON", VK_LBUTTON}, {"RBUTTON", VK_RBUTTON}, {"CANCEL", VK_CANCEL},
-            {"MBUTTON", VK_MBUTTON}, {"XBUTTON1", VK_XBUTTON1}, {"XBUTTON2", VK_XBUTTON2},
-            {"BACK", VK_BACK}, {"TAB", VK_TAB}, {"CLEAR", VK_CLEAR}, {"RETURN", VK_RETURN},
-            {"SHIFT", VK_SHIFT}, {"CONTROL", VK_CONTROL}, {"MENU", VK_MENU}, {"PAUSE", VK_PAUSE},
-            {"CAPITAL", VK_CAPITAL}, {"KANA", VK_KANA}, {"HANGEUL", VK_HANGEUL}, {"HANGUL", VK_HANGUL},
-            {"JUNJA", VK_JUNJA}, {"FINAL", VK_FINAL}, {"HANJA", VK_HANJA}, {"KANJI", VK_KANJI},
-            {"ESCAPE", VK_ESCAPE}, {"CONVERT", VK_CONVERT}, {"NONCONVERT", VK_NONCONVERT},
-            {"ACCEPT", VK_ACCEPT}, {"MODECHANGE", VK_MODECHANGE}, {"SPACE", VK_SPACE},
-            {"PRIOR", VK_PRIOR}, {"NEXT", VK_NEXT}, {"END", VK_END}, {"HOME", VK_HOME},
-            {"LEFT", VK_LEFT}, {"UP", VK_UP}, {"RIGHT", VK_RIGHT}, {"DOWN", VK_DOWN},
-            {"SELECT", VK_SELECT}, {"PRINT", VK_PRINT}, {"EXECUTE", VK_EXECUTE},
-            {"SNAPSHOT", VK_SNAPSHOT}, {"INSERT", VK_INSERT}, {"DELETE", VK_DELETE},
-            {"HELP", VK_HELP}, {"LWIN", VK_LWIN}, {"RWIN", VK_RWIN}, {"APPS", VK_APPS},
-            {"SLEEP", VK_SLEEP}, {"NUMPAD0", VK_NUMPAD0}, {"NUMPAD1", VK_NUMPAD1},
-            {"NUMPAD2", VK_NUMPAD2}, {"NUMPAD3", VK_NUMPAD3}, {"NUMPAD4", VK_NUMPAD4},
-            {"NUMPAD5", VK_NUMPAD5}, {"NUMPAD6", VK_NUMPAD6}, {"NUMPAD7", VK_NUMPAD7},
-            {"NUMPAD8", VK_NUMPAD8}, {"NUMPAD9", VK_NUMPAD9}, {"MULTIPLY", VK_MULTIPLY},
-            {"ADD", VK_ADD}, {"SEPARATOR", VK_SEPARATOR}, {"SUBTRACT", VK_SUBTRACT},
-            {"DECIMAL", VK_DECIMAL}, {"DIVIDE", VK_DIVIDE}, {"F1", VK_F1}, {"F2", VK_F2},
-            {"F3", VK_F3}, {"F4", VK_F4}, {"F5", VK_F5}, {"F6", VK_F6}, {"F7", VK_F7},
-            {"F8", VK_F8}, {"F9", VK_F9}, {"F10", VK_F10}, {"F11", VK_F11}, {"F12", VK_F12},
-            {"F13", VK_F13}, {"F14", VK_F14}, {"F15", VK_F15}, {"F16", VK_F16}, {"F17", VK_F17},
-            {"F18", VK_F18}, {"F19", VK_F19}, {"F20", VK_F20}, {"F21", VK_F21}, {"F22", VK_F22},
-            {"F23", VK_F23}, {"F24", VK_F24}, {"NUMLOCK", VK_NUMLOCK}, {"SCROLL", VK_SCROLL},
-            {"LSHIFT", VK_LSHIFT}, {"RSHIFT", VK_RSHIFT}, {"LCONTROL", VK_LCONTROL},
-            {"RCONTROL", VK_RCONTROL}, {"LMENU", VK_LMENU}, {"RMENU", VK_RMENU},
-            {"BROWSER_BACK", VK_BROWSER_BACK}, {"BROWSER_FORWARD", VK_BROWSER_FORWARD},
-            {"BROWSER_REFRESH", VK_BROWSER_REFRESH}, {"BROWSER_STOP", VK_BROWSER_STOP},
-            {"BROWSER_SEARCH", VK_BROWSER_SEARCH}, {"BROWSER_FAVORITES", VK_BROWSER_FAVORITES},
-            {"BROWSER_HOME", VK_BROWSER_HOME}, {"VOLUME_MUTE", VK_VOLUME_MUTE},
-            {"VOLUME_DOWN", VK_VOLUME_DOWN}, {"VOLUME_UP", VK_VOLUME_UP},
-            {"MEDIA_NEXT_TRACK", VK_MEDIA_NEXT_TRACK}, {"MEDIA_PREV_TRACK", VK_MEDIA_PREV_TRACK},
-            {"MEDIA_STOP", VK_MEDIA_STOP}, {"MEDIA_PLAY_PAUSE", VK_MEDIA_PLAY_PAUSE},
-            {"LAUNCH_MAIL", VK_LAUNCH_MAIL}, {"LAUNCH_MEDIA_SELECT", VK_LAUNCH_MEDIA_SELECT},
-            {"LAUNCH_APP1", VK_LAUNCH_APP1}, {"LAUNCH_APP2", VK_LAUNCH_APP2},
-            {"OEM_1", VK_OEM_1}, {"OEM_PLUS", VK_OEM_PLUS}, {"OEM_COMMA", VK_OEM_COMMA},
-            {"OEM_MINUS", VK_OEM_MINUS}, {"OEM_PERIOD", VK_OEM_PERIOD}, {"OEM_2", VK_OEM_2},
-            {"OEM_3", VK_OEM_3}, {"OEM_4", VK_OEM_4}, {"OEM_5", VK_OEM_5}, {"OEM_6", VK_OEM_6},
-            {"OEM_7", VK_OEM_7}, {"OEM_8", VK_OEM_8}, {"OEM_102", VK_OEM_102},
-            {"PROCESSKEY", VK_PROCESSKEY}, {"PACKET", VK_PACKET}, {"ATTN", VK_ATTN},
-            {"CRSEL", VK_CRSEL}, {"EXSEL", VK_EXSEL}, {"EREOF", VK_EREOF}, {"PLAY", VK_PLAY},
-            {"ZOOM", VK_ZOOM}, {"NONAME", VK_NONAME}, {"PA1", VK_PA1}, {"OEM_CLEAR", VK_OEM_CLEAR},
-            {"ENTER", VK_RETURN}, {"ESC", VK_ESCAPE}, {"PAGEUP", VK_PRIOR}, {"PAGEDOWN", VK_NEXT},
-            {"PGUP", VK_PRIOR}, {"PGDN", VK_NEXT}, {"PRTSC", VK_SNAPSHOT}, {"PRTSCR", VK_SNAPSHOT},
-            {"PRINTSCRN", VK_SNAPSHOT}, {"APPS", VK_APPS}, {"CTRL", VK_CONTROL}, {"ALT", VK_MENU},
-            {"DEL", VK_DELETE}, {"INS", VK_INSERT}, {"NUM", VK_NUMLOCK}, {"SCRLK", VK_SCROLL},
-            {"CAPSLOCK", VK_CAPITAL}, {"CAPS", VK_CAPITAL}, {"BREAK", VK_CANCEL},
+             {"LBUTTON", VK_LBUTTON}, {"RBUTTON", VK_RBUTTON}, {"CANCEL", VK_CANCEL},
+             {"MBUTTON", VK_MBUTTON}, {"XBUTTON1", VK_XBUTTON1}, {"XBUTTON2", VK_XBUTTON2},
+             {"BACK", VK_BACK}, {"TAB", VK_TAB}, {"CLEAR", VK_CLEAR}, {"RETURN", VK_RETURN},
+             {"SHIFT", VK_SHIFT}, {"CONTROL", VK_CONTROL}, {"MENU", VK_MENU}, {"PAUSE", VK_PAUSE},
+             {"CAPITAL", VK_CAPITAL}, {"KANA", VK_KANA}, {"HANGEUL", VK_HANGEUL}, {"HANGUL", VK_HANGUL},
+             {"JUNJA", VK_JUNJA}, {"FINAL", VK_FINAL}, {"HANJA", VK_HANJA}, {"KANJI", VK_KANJI},
+             {"ESCAPE", VK_ESCAPE}, {"CONVERT", VK_CONVERT}, {"NONCONVERT", VK_NONCONVERT},
+             {"ACCEPT", VK_ACCEPT}, {"MODECHANGE", VK_MODECHANGE}, {"SPACE", VK_SPACE},
+             {"PRIOR", VK_PRIOR}, {"NEXT", VK_NEXT}, {"END", VK_END}, {"HOME", VK_HOME},
+             {"LEFT", VK_LEFT}, {"UP", VK_UP}, {"RIGHT", VK_RIGHT}, {"DOWN", VK_DOWN},
+             {"SELECT", VK_SELECT}, {"PRINT", VK_PRINT}, {"EXECUTE", VK_EXECUTE},
+             {"SNAPSHOT", VK_SNAPSHOT}, {"INSERT", VK_INSERT}, {"DELETE", VK_DELETE},
+             {"HELP", VK_HELP}, {"LWIN", VK_LWIN}, {"RWIN", VK_RWIN}, {"APPS", VK_APPS},
+             {"SLEEP", VK_SLEEP}, {"NUMPAD0", VK_NUMPAD0}, {"NUMPAD1", VK_NUMPAD1},
+             {"NUMPAD2", VK_NUMPAD2}, {"NUMPAD3", VK_NUMPAD3}, {"NUMPAD4", VK_NUMPAD4},
+             {"NUMPAD5", VK_NUMPAD5}, {"NUMPAD6", VK_NUMPAD6}, {"NUMPAD7", VK_NUMPAD7},
+             {"NUMPAD8", VK_NUMPAD8}, {"NUMPAD9", VK_NUMPAD9}, {"MULTIPLY", VK_MULTIPLY},
+             {"ADD", VK_ADD}, {"SEPARATOR", VK_SEPARATOR}, {"SUBTRACT", VK_SUBTRACT},
+             {"DECIMAL", VK_DECIMAL}, {"DIVIDE", VK_DIVIDE}, {"F1", VK_F1}, {"F2", VK_F2},
+             {"F3", VK_F3}, {"F4", VK_F4}, {"F5", VK_F5}, {"F6", VK_F6}, {"F7", VK_F7},
+             {"F8", VK_F8}, {"F9", VK_F9}, {"F10", VK_F10}, {"F11", VK_F11}, {"F12", VK_F12},
+             {"F13", VK_F13}, {"F14", VK_F14}, {"F15", VK_F15}, {"F16", VK_F16}, {"F17", VK_F17},
+             {"F18", VK_F18}, {"F19", VK_F19}, {"F20", VK_F20}, {"F21", VK_F21}, {"F22", VK_F22},
+             {"F23", VK_F23}, {"F24", VK_F24}, {"NUMLOCK", VK_NUMLOCK}, {"SCROLL", VK_SCROLL},
+             {"LSHIFT", VK_LSHIFT}, {"RSHIFT", VK_RSHIFT}, {"LCONTROL", VK_LCONTROL},
+             {"RCONTROL", VK_RCONTROL}, {"LMENU", VK_LMENU}, {"RMENU", VK_RMENU},
+             {"BROWSER_BACK", VK_BROWSER_BACK}, {"BROWSER_FORWARD", VK_BROWSER_FORWARD},
+             {"BROWSER_REFRESH", VK_BROWSER_REFRESH}, {"BROWSER_STOP", VK_BROWSER_STOP},
+             {"BROWSER_SEARCH", VK_BROWSER_SEARCH}, {"BROWSER_FAVORITES", VK_BROWSER_FAVORITES},
+             {"BROWSER_HOME", VK_BROWSER_HOME}, {"VOLUME_MUTE", VK_VOLUME_MUTE},
+             {"VOLUME_DOWN", VK_VOLUME_DOWN}, {"VOLUME_UP", VK_VOLUME_UP},
+             {"MEDIA_NEXT_TRACK", VK_MEDIA_NEXT_TRACK}, {"MEDIA_PREV_TRACK", VK_MEDIA_PREV_TRACK},
+             {"MEDIA_STOP", VK_MEDIA_STOP}, {"MEDIA_PLAY_PAUSE", VK_MEDIA_PLAY_PAUSE},
+             {"LAUNCH_MAIL", VK_LAUNCH_MAIL}, {"LAUNCH_MEDIA_SELECT", VK_LAUNCH_MEDIA_SELECT},
+             {"LAUNCH_APP1", VK_LAUNCH_APP1}, {"LAUNCH_APP2", VK_LAUNCH_APP2},
+             {"OEM_1", VK_OEM_1}, {"OEM_PLUS", VK_OEM_PLUS}, {"OEM_COMMA", VK_OEM_COMMA},
+             {"OEM_MINUS", VK_OEM_MINUS}, {"OEM_PERIOD", VK_OEM_PERIOD}, {"OEM_2", VK_OEM_2},
+             {"OEM_3", VK_OEM_3}, {"OEM_4", VK_OEM_4}, {"OEM_5", VK_OEM_5}, {"OEM_6", VK_OEM_6},
+             {"OEM_7", VK_OEM_7}, {"OEM_8", VK_OEM_8}, {"OEM_102", VK_OEM_102},
+             {"PROCESSKEY", VK_PROCESSKEY}, {"PACKET", VK_PACKET}, {"ATTN", VK_ATTN},
+             {"CRSEL", VK_CRSEL}, {"EXSEL", VK_EXSEL}, {"EREOF", VK_EREOF}, {"PLAY", VK_PLAY},
+             {"ZOOM", VK_ZOOM}, {"NONAME", VK_NONAME}, {"PA1", VK_PA1}, {"OEM_CLEAR", VK_OEM_CLEAR},
+             {"ENTER", VK_RETURN}, {"ESC", VK_ESCAPE}, {"PAGEUP", VK_PRIOR}, {"PAGEDOWN", VK_NEXT},
+             {"PGUP", VK_PRIOR}, {"PGDN", VK_NEXT}, {"PRTSC", VK_SNAPSHOT}, {"PRTSCR", VK_SNAPSHOT},
+             {"PRINTSCRN", VK_SNAPSHOT}, {"APPS", VK_APPS}, {"CTRL", VK_CONTROL}, {"ALT", VK_MENU},
+             {"DEL", VK_DELETE}, {"INS", VK_INSERT}, {"NUM", VK_NUMLOCK}, {"SCRLK", VK_SCROLL},
+             {"CAPSLOCK", VK_CAPITAL}, {"CAPS", VK_CAPITAL}, {"BREAK", VK_CANCEL},
         };
-
         std::string upperKey = keyName;
         std::transform(upperKey.begin(), upperKey.end(), upperKey.begin(),
             [](unsigned char c) { return std::toupper(c); });
-
 
         if (upperKey.substr(0, 3) == "VK_" || upperKey.substr(0, 2) == "VK") {
             upperKey = upperKey.substr(upperKey[2] == '_' ? 3 : 2);
@@ -2043,16 +2069,17 @@ private:
         if (it != keyMap.end()) {
             return it->second;
         }
+
         if (upperKey.length() == 1) {
             char ch = upperKey[0];
             if (std::isalnum(static_cast<unsigned char>(ch))) {
                 SHORT vk = VkKeyScanA(ch);
                 if (vk != -1) {
-                    int virtualKeyCode = vk & 0xFF;
-                    return virtualKeyCode;
+                    return LOBYTE(vk);
                 }
             }
         }
+
         try {
             int vkCode = std::stoi(upperKey);
             if (vkCode >= 0 && vkCode <= 255) {
@@ -2060,8 +2087,9 @@ private:
             }
         }
         catch (const std::exception&) {
+            //ignore
         }
-        return 0;
+        throw std::runtime_error("Unable to map key '" + keyName + "' to a virtual key code.");
     }
 
     WORD vkToScanCode(int vk) {
@@ -2084,8 +2112,8 @@ private:
                     else if (action == "TOGGLE_88_KEY_MODE") toggle_88_key_mode();
                     else if (action == "TOGGLE_VOLUME_ADJUSTMENT") toggle_volume_adjustment();
                     else if (action == "TOGGLE_TRANSPOSE_ADJUSTMENT") toggle_transpose_adjustment();
-                    else if (action == "TOGGLE_ADAPTIVE_TIMER") toggle_adaptive_timer();
                     else if (action == "STOP_AND_EXIT") stop_and_exit();
+                    else if (action == "RESTART_SONG") restart_song();  // Add this line
                     else if (action == "TOGGLE_SUSTAIN_MODE") toggleSustainMode();
                     else std::cerr << "Unknown action: " << action << std::endl;
                     };
@@ -2096,14 +2124,12 @@ private:
         }
         return controls;
     }
+
     void clean_keyboard_state() {
-        // keyboard gone ape shit emergency
         const int keys_to_reset[] = {
             VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
             VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
-            VK_MENU, VK_LMENU, VK_RMENU,
-            VK_LWIN, VK_RWIN,
-            'C', 'V', 'X' 
+            VK_MENU, VK_LMENU, VK_RMENU
         };
 
         for (int vk = 0; vk < 256; ++vk) {
@@ -2132,26 +2158,27 @@ private:
         EmptyClipboard();
         CloseClipboard();
     }
+
     void stop_and_exit() {
-        setcolor(ConsoleColor::Red);
         std::cout << "\n[EMERGENCY EXIT] Stopping playback and cleaning up...\n";
-        setcolor(ConsoleColor::Default);
         should_stop.store(true, std::memory_order_relaxed);
         paused.store(true, std::memory_order_relaxed);
         release_all_keys();
         clean_keyboard_state();
-        if (playback_thread && playback_thread->joinable()) {
-            playback_thread->join();
-        }
-        if (enable_volume_adjustment.load(std::memory_order_relaxed)) {
-            reset_volume();
+        auto future = std::async(std::launch::async, [this] {
+            if (playback_thread->joinable()) {
+                playback_thread->join();
+            }
+            });
+
+        if (future.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
+            std::cout << "Playback thread did not stop in time. Forcing termination...\n";
         }
 
-        setcolor(ConsoleColor::Green);
         std::cout << "Cleanup complete. Keyboard state reset. Exiting program.\n";
-        setcolor(ConsoleColor::Default);
         std::exit(0);
     }
+
     void reset_volume() {
         int volume_difference = config.volume.INITIAL_VOLUME - current_volume.load(std::memory_order_relaxed);
         int steps = std::abs(volume_difference) / config.volume.VOLUME_STEP;
@@ -2163,40 +2190,7 @@ private:
 
         current_volume.store(config.volume.INITIAL_VOLUME, std::memory_order_relaxed);
     }
-    void toggle_adaptive_timer() {
-        bool adaptpause = paused.load();
-        if (!adaptpause) {
-            setcolor(ConsoleColor::Red);
-            std::cout << "Cannot switch timers while playback is running. Stop playback first." << std::endl;
-            setcolor(ConsoleColor::Default);
-            return;
-        }
 
-        use_adaptive_timer = !use_adaptive_timer;
-
-        if (use_adaptive_timer) {
-            setcolor(ConsoleColor::Blue);
-            std::cout << "[TIMER] ";
-            setcolor(ConsoleColor::White);
-            std::cout << "High Percision Timer enabled." << std::endl;
-            setcolor(ConsoleColor::Yellow);
-            std::cout << "[NOTE] ";
-            setcolor(ConsoleColor::White);
-
-            std::cout << "Only enable this if extremely accurate playback is crucial across an extended period of time and if your cpu is good." << std::endl;
-        }
-        else {
-            setcolor(ConsoleColor::Blue);
-            std::cout << "[TIMER] ";
-            setcolor(ConsoleColor::White);
-            std::cout << "Default timer enabled." << std::endl;
-            setcolor(ConsoleColor::Yellow);
-            std::cout << "[NOTE] ";
-            setcolor(ConsoleColor::White);
-            std::cout << "This timer balances performance and accuracy and is best for most situations." << std::endl;
-        }
-        setcolor(ConsoleColor::Default);
-    }
     void setup_listener() {
         listener_thread = std::thread([this]() {
             std::unordered_map<int, bool> key_states;
@@ -2222,33 +2216,26 @@ private:
             }
             });
     }
+
     void toggleSustainMode() {
         switch (currentSustainMode) {
         case SustainMode::IG:
             currentSustainMode = SustainMode::SPACE_DOWN;
-            setcolor(ConsoleColor::Blue);
-            std::cout << "[SUSTAIN] ";
-            setcolor(ConsoleColor::White);
-            std::cout << "DOWN (Press on sustain events)" << " with cut off velocity set to: " << config.sustain.SUSTAIN_CUTOFF << std::endl;
-
+            std::cout << "[SUSTAIN] DOWN (Press on sustain events) with cut off velocity set to: " << config.sustain.SUSTAIN_CUTOFF << std::endl;
             break;
         case SustainMode::SPACE_DOWN:
             currentSustainMode = SustainMode::SPACE_UP;
-            setcolor(ConsoleColor::Blue);
-            std::cout << "[SUSTAIN] ";
-            setcolor(ConsoleColor::White);
-            std::cout << "UP (Release on sustain events)" << " with cut off velocity set to: " << config.sustain.SUSTAIN_CUTOFF << std::endl;
+            std::cout << "[SUSTAIN] UP (Release on sustain events) with cut off velocity set to: " << config.sustain.SUSTAIN_CUTOFF << std::endl;
             break;
         case SustainMode::SPACE_UP:
             currentSustainMode = SustainMode::IG;
-            setcolor(ConsoleColor::Blue);
-            std::cout << "[SUSTAIN] ";
-            setcolor(ConsoleColor::White);
-            std::cout << "IGNORE (Ignores sustain events)" << std::endl;
+            std::cout << "[SUSTAIN] IGNORE (Ignores sustain events)" << std::endl;
             break;
         }
     }
+
     void toggle_play_pause() {
+        std::lock_guard<std::mutex> lock(cv_m);
         release_all_keys();
         bool was_paused = paused.exchange(!paused.load(std::memory_order_relaxed));
 
@@ -2265,14 +2252,13 @@ private:
             }
 
             if (!playback_thread || !playback_thread->joinable()) {
-                playback_thread = std::make_unique<std::thread>(&VirtualPianoPlayer::play_notes, this);
+                playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this);
             }
         }
         else {
             total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
                 (now - last_resume_time) * current_speed);
         }
-
         cv.notify_all();
         std::cout << (was_paused ? "Resumed playback" : "Paused playback") << std::endl;
     }
@@ -2343,33 +2329,33 @@ private:
             return a->time < b->time;
             });
     }
-    inline void execute_note_event(const NoteEvent& event) noexcept {
-            if (event.isPress) {
-                if (enable_volume_adjustment.load(std::memory_order_relaxed)) {
+    __forceinline void execute_note_event(const NoteEvent& event) noexcept {
+        if (!event.isSustain) [[likely]] {
+            if (event.isPress) [[likely]] {
+                if (enable_volume_adjustment.load(std::memory_order_relaxed)) [[unlikely]] {
                     AdjustVolumeBasedOnVelocity(event.velocity);
-                }
+                    }
                 press_key(event.note, event.velocity);
-            }
+                }
             else {
                 release_key(event.note);
             }
-        }   
-    
-  
+            }
+        else {
+            handle_sustain_event(event);
+        }
+    }
+
     inline void press_key(const std::string& note, int velocity) noexcept {
         const std::string& key = eightyEightKeyModeActive ?
             full_key_mappings[note] : limited_key_mappings[note];
         if (!key.empty()) {
-            int current_active = active_keys.load(std::memory_order_relaxed);
-            if (current_active < 88) {
-                if (!pressed_keys[note].exchange(true, std::memory_order_relaxed)) {
-                    active_keys.fetch_add(1, std::memory_order_relaxed);
-                    KeyPress(key, true);
-                }
-                else {
-                    KeyPress(key, false);
-                    KeyPress(key, true);
-                }
+            if (!pressed_keys[note].exchange(true, std::memory_order_relaxed)) {
+                KeyPress(key, true);
+            }
+            else {
+                KeyPress(key, false);
+                KeyPress(key, true);
             }
         }
     }
@@ -2377,11 +2363,8 @@ private:
     inline void release_key(const std::string& note) noexcept {
         const std::string& key = eightyEightKeyModeActive ?
             full_key_mappings[note] : limited_key_mappings[note];
-        if (!key.empty()) {
-            if (pressed_keys[note].exchange(false, std::memory_order_relaxed)) {
-                active_keys.fetch_sub(1, std::memory_order_relaxed);
-                KeyPress(key, false);
-            }
+        if (!key.empty() && pressed_keys[note].exchange(false, std::memory_order_relaxed)) {
+            KeyPress(key, false);
         }
     }
     void release_all_keys() {
@@ -2394,82 +2377,115 @@ private:
         for (auto& [note, pressed] : pressed_keys) {
             pressed.store(false, std::memory_order_relaxed);
         }
-        active_keys.store(0, std::memory_order_relaxed);
     }
-   void skip(std::chrono::seconds duration) {
-    std::unique_lock<std::mutex> lock(cv_m);
+    void skip(std::chrono::seconds duration) {
+        std::unique_lock<std::mutex> lock(skip_rewind_mutex);
 
-    auto skip_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(duration * current_speed);
-    
-    if (paused.load(std::memory_order_relaxed)) {
-        skip_offset += skip_duration;
-        total_adjusted_time += skip_duration;
-    } else {
-        is_skipping.store(true);
+        if (!playback_started.load(std::memory_order_acquire)) {
+            setcolor(ConsoleColor::Blue);
+            std::cout << "[SKIP] ";
+            setcolor(ConsoleColor::White);
+            std::cout << "Playback not started, adjusting start time\n";
+            setcolor(ConsoleColor::White);
+            playback_start_time += duration;
+            last_resume_time = playback_start_time;
+            return;
+        }
+
         auto now = std::chrono::steady_clock::now();
-        total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
-            (now - last_resume_time) * current_speed);
+        Duration current_position;
 
-        skip_offset += skip_duration;
+        if (!paused.load(std::memory_order_acquire)) {
+            auto elapsed = std::chrono::duration_cast<Duration>((now - last_resume_time) * current_speed);
+            current_position = total_adjusted_time + elapsed;
+        }
+        else {
+            current_position = total_adjusted_time;
+        }
+
+        auto skip_amount = std::chrono::duration_cast<Duration>(duration * current_speed);
+        Duration new_position = current_position + skip_amount;
+
+        // bugfix check if we're trying to skip beyond the end of the song
+        if (!note_buffer.empty() && new_position > note_buffer.back()->time) {
+            setcolor(ConsoleColor::Blue);
+            std::cout << "[SKIP] ";
+            setcolor(ConsoleColor::White);
+            std::cout << "Attempting to skip beyond the end of the song sure...\n";
+            setcolor(ConsoleColor::White);
+            new_position = note_buffer.back()->time;
+        }
+
+        total_adjusted_time = new_position;
         last_resume_time = now;
+        is_adjusting_playback.store(true, std::memory_order_release);
+        adjustment_start_time = now;
+
+        size_t new_index = find_next_event_index(total_adjusted_time);
+        buffer_index.store(new_index, std::memory_order_release);
+
+        skip_occurred.store(true, std::memory_order_release);
+        skip_end_time.store(total_adjusted_time, std::memory_order_release);
 
         release_all_keys();
-        cv.notify_all();
-        skip_cv.wait(lock, [this] { return !is_skipping.load(); });
+        setcolor(ConsoleColor::Blue);
+        std::cout << "[SKIP] ";
+        setcolor(ConsoleColor::White);
+        std::cout << "New buffer index after skip: " << std::to_string(new_index)<<std::endl;
+        setcolor(ConsoleColor::White);
+
+        if (paused.load(std::memory_order_acquire)) {
+            cv.notify_all(); // Wake up the playback thread if it's paused
+        }
     }
-    buffer_index = std::lower_bound(note_buffer.begin(), note_buffer.end(), // pos update
-        total_adjusted_time + skip_offset,
-        [](const auto& event, const Duration& time) {
-            return event->time < time;
-        }) - note_buffer.begin();
+    void rewind(std::chrono::seconds duration) {
+        std::unique_lock<std::mutex> lock(skip_rewind_mutex);
 
-    setcolor(ConsoleColor::Blue);
-    std::cout << "[SKIP] ";
-    setcolor(ConsoleColor::White);
-    std::cout << "Skipped by 10 sec\n";
-    setcolor(ConsoleColor::White);
+        if (!playback_started.load(std::memory_order_acquire)) {
+            setcolor(ConsoleColor::Blue);
+            std::cout << "[REWIND] ";
+            setcolor(ConsoleColor::White);
+            std::cout << "Playback not started, adjusting start time\n";
+            setcolor(ConsoleColor::White);
+            return;
+        }
 
-}
+        auto now = std::chrono::steady_clock::now();
+        if (!paused.load(std::memory_order_acquire)) {
+            auto elapsed = std::chrono::duration_cast<Duration>((now - last_resume_time) * current_speed);
+            total_adjusted_time += elapsed;
+        }
 
-   void rewind(std::chrono::seconds duration) {
-       std::unique_lock<std::mutex> lock(cv_m);
+        auto rewind_amount = std::chrono::duration_cast<Duration>(duration * current_speed);
+        if (rewind_amount > total_adjusted_time) {
+            rewind_amount = total_adjusted_time;
+        }
+        total_adjusted_time -= rewind_amount;
 
-       auto rewind_amount = std::chrono::duration_cast<std::chrono::nanoseconds>(duration * current_speed);
-       if (rewind_amount > total_adjusted_time + skip_offset) {
-           rewind_amount = total_adjusted_time + skip_offset;
-       }
+        last_resume_time = now;
+        is_adjusting_playback.store(true, std::memory_order_release);
+        adjustment_start_time = now;
 
-       if (paused.load(std::memory_order_relaxed)) {
-           skip_offset -= rewind_amount;
-           total_adjusted_time = std::max(total_adjusted_time - rewind_amount, Duration::zero());
-       }
-       else {
-           is_rewinding.store(true);
-           auto now = std::chrono::steady_clock::now();
-           total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
-               (now - last_resume_time) * current_speed);
+        size_t new_index = find_next_event_index(total_adjusted_time);
+        buffer_index.store(new_index, std::memory_order_release);
 
-           skip_offset -= rewind_amount;
-           total_adjusted_time = std::max(total_adjusted_time - rewind_amount, Duration::zero());
-           last_resume_time = now;
+        release_all_keys();
+        setcolor(ConsoleColor::Blue);
+        std::cout << "[REWIND] ";
+        setcolor(ConsoleColor::White);
+        std::cout << "New buffer index after rewind: " << std::to_string(new_index) << std::endl;
+        setcolor(ConsoleColor::White);
+        if (paused.load(std::memory_order_acquire)) {
+            cv.notify_all(); // Wake up the playback thread if it's paused
+        }
+    }
+    size_t find_next_event_index(const Duration& target_time) {
+        return std::lower_bound(note_buffer.begin(), note_buffer.end(), target_time,
+            [](const auto& event, const Duration& time) {
+                return event->time < time;
+            }) - note_buffer.begin();
+    }
 
-           release_all_keys();
-           cv.notify_all();
-           skip_cv.wait(lock, [this] { return !is_rewinding.load(); });
-       }
-
-       buffer_index.store(std::lower_bound(note_buffer.begin(), note_buffer.end(),
-           total_adjusted_time + skip_offset,
-           [](const auto& event, const Duration& time) {
-               return event->time < time;
-           }) - note_buffer.begin(), std::memory_order_relaxed);
-
-       setcolor(ConsoleColor::Blue);
-       std::cout << "[REWIND] ";
-       setcolor(ConsoleColor::White);
-       std::cout << "Rewound " << duration.count() << " seconds\n";
-       setcolor(ConsoleColor::White);
-   } 
     void speed_up() {
         adjust_playback_speed(1.1);
     }
@@ -2520,114 +2536,46 @@ private:
         setcolor(ConsoleColor::DarkGray);
         std::cout << separator << "\n";
         setcolor(ConsoleColor::Default);
-
-        enable_auto_transpose = !enable_auto_transpose;
-        if (enable_auto_transpose) {
-            auto [notes, durations] = detector.extractNotesAndDurations(midi_file);
-            if (notes.empty()) {
-                setcolor(ConsoleColor::Red);
-                std::cout << "[ERROR] No notes detected. The MIDI file might be corrupted or empty.\n";
-                setcolor(ConsoleColor::DarkGray);
-                std::cout << separator << "\n";
-                setcolor(ConsoleColor::Default);
-                return;
-            }
-
-            setcolor(ConsoleColor::Cyan);
-            std::cout << "Estimated musical key: ";
-            setcolor(ConsoleColor::White);
-            std::string key = detector.estimateKey(notes, durations);
-            std::cout << key << "\n";
-
-            setcolor(ConsoleColor::Cyan);
-            std::cout << "Detected genre: ";
-            setcolor(ConsoleColor::White);
-            std::string genre = detector.detectGenre(midi_file, notes, durations);
-            std::cout << genre << "\n";
-            setcolor(ConsoleColor::DarkGray);
-            std::cout << separator << "\n";
-
-            int bestTranspose = detector.findBestTranspose(notes, durations, key, genre);
-            setcolor(ConsoleColor::Cyan);
-            std::cout << "Transpose Suggestion (Beta):\n";
-            setcolor(ConsoleColor::White);
-            std::cout << "The suggested transpose value is ";
-            setcolor(ConsoleColor::Green);
-            std::cout << bestTranspose;
-            setcolor(ConsoleColor::White);
-            std::cout << " semitones.\n";
-            setcolor(ConsoleColor::Yellow);
-            std::cout << "\n[ ! ] This suggestion is based on advanced music theory concepts.\n";
-            std::cout << "Remember, the best transpose ultimately depends on personal preference.\n";
-            setcolor(ConsoleColor::DarkGray);
-            std::cout << separator << "\n";
-        }
-        else {
-            setcolor(ConsoleColor::White);
-            std::cout << "Auto-transpose has been disabled.\n";
+        auto [notes, durations] = detector.extractNotesAndDurations(midi_file);
+        if (notes.empty()) {
+            setcolor(ConsoleColor::Red);
+            std::cout << "[ERROR] No notes detected. The MIDI file might be corrupted or empty.\n";
             setcolor(ConsoleColor::DarkGray);
             std::cout << separator << "\n";
             setcolor(ConsoleColor::Default);
+            return;
         }
+
+        setcolor(ConsoleColor::Cyan);
+        std::cout << "Estimated musical key: ";
+        setcolor(ConsoleColor::White);
+        std::string key = detector.estimateKey(notes, durations);
+        std::cout << key << "\n";
+
+        setcolor(ConsoleColor::Cyan);
+        std::cout << "Detected genre: ";
+        setcolor(ConsoleColor::White);
+        std::string genre = detector.detectGenre(midi_file, notes, durations);
+        std::cout << genre << "\n";
+        setcolor(ConsoleColor::DarkGray);
+        std::cout << separator << "\n";
+
+        int bestTranspose = detector.findBestTranspose(notes, durations, key, genre);
+        setcolor(ConsoleColor::Cyan);
+        std::cout << "Transpose Suggestion (Beta):\n";
+        setcolor(ConsoleColor::White);
+        std::cout << "The suggested transpose value is ";
+        setcolor(ConsoleColor::Green);
+        std::cout << bestTranspose;
+        setcolor(ConsoleColor::White);
+        std::cout << " semitones.\n";
+        setcolor(ConsoleColor::Yellow);
+        std::cout << "\n[ ! ] This suggestion is based on advanced music theory concepts.\n";
+        std::cout << "Remember, the best transpose ultimately depends on personal preference.\n";
+        setcolor(ConsoleColor::DarkGray);
+        std::cout << separator << "\n";
+
     }
-    void load_new_song() {
-        bool successful_load = false;
-        while (!successful_load) {
-            std::string midi_file_path = get_midi_file_choice();
-            if (midi_file_path.empty()) {
-                std::cout << "No MIDI file selected. Returning to current song." << std::endl;
-                return;
-            }
-
-            MidiParser parser;
-
-            if (!std::filesystem::exists(midi_file_path)) {
-                std::cerr << "Error: File does not exist: " << midi_file_path << std::endl;
-                continue;
-            }
-
-            try {
-                midi_file = parser.parse(midi_file_path);
-                successful_load = true;
-                process_tracks(midi_file);
-                display_midi_details(midi_file, midi_file_path);
-
-                if (playback_thread && playback_thread->joinable()) {
-                    HANDLE thread_handle = playback_thread->native_handle();
-                    // im lazy ok i clean it up after
-                    TerminateThread(thread_handle, 0);
-                    playback_thread->detach();
-                    playback_thread.reset();
-                }
-
-                paused.store(true, std::memory_order_relaxed);
-                should_stop.store(false, std::memory_order_relaxed);
-                total_adjusted_time = std::chrono::nanoseconds(0);
-                skip_offset = std::chrono::nanoseconds(0);
-                current_speed = 1.0;
-                buffer_index.store(0, std::memory_order_relaxed);
-                last_resume_time = std::chrono::steady_clock::now();
-                NoteEvent dummy;
-                while (event_queue.try_dequeue(dummy)) {}
-                prepare_event_queue();
-                playback_thread = std::make_unique<std::thread>(&VirtualPianoPlayer::play_notes, this);
-                cv.notify_all();
-                
-            }
-            catch (const std::exception& e) {
-                std::cerr << "Error parsing MIDI file: " << midi_file_path << std::endl;
-                std::cerr << "Error details: " << e.what() << std::endl;
-                std::cout << "Would you like to select another song? (y/n): ";
-                char response;
-                std::cin >> response;
-                if (response != 'y' && response != 'Y') {
-                    std::cout << "Returning to current song." << std::endl;
-                    return;
-                }
-            }
-        }
-    }
-
     std::string wstring_to_string(const std::wstring& wstr) {
         if (wstr.empty()) return std::string();
         int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -2645,8 +2593,12 @@ private:
     }
     // fucking gene bro
     std::wstring sanitizeFileName(const std::wstring& fileName) {
+        const size_t maxLength = 200;
         std::wstring sanitized;
-        for (wchar_t c : fileName) {
+
+        std::wstring truncatedFileName = fileName.substr(0, maxLength - 1);
+
+        for (wchar_t c : truncatedFileName) {
             if ((c >= L'a' && c <= L'z') ||
                 (c >= L'A' && c <= L'Z') ||
                 (c >= L'0' && c <= L'9') ||
@@ -2672,9 +2624,16 @@ private:
             else {
                 sanitized += L'_';
             }
+
+            if (sanitized.length() >= maxLength) {
+                sanitized = sanitized.substr(0, maxLength - 1);
+                break;
+            }
         }
+
         return sanitized;
     }
+
     std::vector<std::pair<std::wstring, std::wstring>> list_midi_files(const std::wstring& folder) {
         std::vector<std::pair<std::wstring, std::wstring>> midi_files;
         std::set<std::wstring> processed_files;
@@ -2723,7 +2682,7 @@ private:
     }
 
     std::string get_midi_file_choice() {
-        const std::wstring midi_folder = L"midi";
+        const std::wstring midi_folder = L"midi"; 
         auto midi_files = list_midi_files(midi_folder);
 
         if (midi_files.empty()) {
@@ -2785,27 +2744,169 @@ private:
 
         return wstring_to_string(midi_files[choice - 1].second);
     }
-    void load_midi_file(std::string midi_file_path) {
-        //don't crash now ok
-        MidiParser parser;
-        bool successfulllll_load = false;
+    void reset() {
+            std::lock_guard<std::mutex> lock(cv_m);
+            should_stop.store(true, std::memory_order_release);
+            paused.store(true, std::memory_order_release);
+            cv.notify_all();
 
-        while (!successfulllll_load) {
+            if (playback_thread && playback_thread->joinable()) {
+                try {
+                    playback_thread->join();
+                }
+                catch (const std::exception& e) {
+                    std::cerr << "Error joining playback thread: " << e.what() << std::endl;
+                }
+            }
+            playback_started.store(false, std::memory_order_release);
+            is_adjusting_playback.store(false, std::memory_order_release);
+            midiFileSelected.store(false, std::memory_order_release);
+            enable_volume_adjustment.store(false, std::memory_order_release);
+            eightyEightKeyModeActive.store(false, std::memory_order_release);
+            skip_rewind_requested.store(false, std::memory_order_release);
+            skip_rewind_completed.store(false, std::memory_order_release);
+            skip_occurred.store(false, std::memory_order_release);
+
+            total_adjusted_time = Duration::zero();
+            playback_start_time = TimePoint();
+            last_resume_time = TimePoint();
+            adjustment_start_time = TimePoint();
+            last_adjustment_time = Clock::now();
+            skip_end_time.store(Duration::zero(), std::memory_order_release);
+
+            current_speed = 1.0;
+            buffer_index.store(0, std::memory_order_release);
+            current_volume.store(config.volume.INITIAL_VOLUME, std::memory_order_release);
+            max_volume.store(config.volume.MAX_VOLUME, std::memory_order_release);
+            note_events.clear();
+            tempo_changes.clear();
+            timeSignatures.clear();
+            note_buffer.clear();
+            for (auto& [note, pressed] : pressed_keys) {
+                pressed.store(false, std::memory_order_relaxed);
+            }
+            release_all_keys();
+            reset_volume();
+            skip_rewind_amount.store(Duration::zero(), std::memory_order_release);
+            isSustainPressed = false;
+            currentSustainMode = SustainMode::IG;
+
+            event_pool.reset();
+            timer.start();
+            midi_file = MidiFile();
+    }
+  void restart_song() {
+        try {
+            std::cout << "[RESTART] Restarting the current song...\n";
+            should_stop.store(true, std::memory_order_release);
+            paused.store(true, std::memory_order_release);
+            cv.notify_all();
+
+            // Safely join the playback thread
+            if (playback_thread && playback_thread->joinable()) {
+                auto future = std::async(std::launch::async, [this] {
+                    playback_thread->join();
+                    });
+
+                if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
+                    std::cerr << "Warning: Playback thread did not join in time. Detaching.\n";
+                    playback_thread->detach();
+                }
+            }
+            playback_started.store(false, std::memory_order_release);
+            total_adjusted_time = Duration::zero();
+            current_speed = 1.0;
+            release_all_keys();
+            timer.start();
+            playback_start_time = std::chrono::steady_clock::now();
+            last_resume_time = playback_start_time;
+            should_stop.store(false, std::memory_order_release);
+            paused.store(false, std::memory_order_release);
+
+            playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this);
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Error during song restart: " << e.what() << "\n";
+            reset();
+        }
+    }
+
+  void load_new_song() {
+      while (true) {
+          try {
+              system("cls");
+              cv.notify_all();
+
+              should_stop.store(true, std::memory_order_release);
+              paused.store(true, std::memory_order_release);
+              if (playback_thread && playback_thread->joinable()) {
+                  auto future = std::async(std::launch::async, [this] {
+                      playback_thread->join();
+                      });
+
+                  if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
+                      std::cerr << "Warning: Playback thread did not join in time. Detaching.\n";
+                      playback_thread->detach();
+                  }
+              }
+              note_events.clear();
+              tempo_changes.clear();
+              timeSignatures.clear();
+              std::string new_midi_file_path = get_midi_file_choice();
+              if (new_midi_file_path.empty()) {
+                  std::cout << "No new MIDI file selected. Returning to previous state.\n";
+                  return;
+              }
+              MidiParser parser;
+              midi_file = parser.parse(new_midi_file_path);
+              process_tracks(midi_file);
+
+              should_stop.store(false, std::memory_order_release);
+              paused.store(true, std::memory_order_release);
+              playback_started.store(false, std::memory_order_release);
+              total_adjusted_time = Duration::zero();
+              current_speed = 1.0;
+              is_adjusting_playback.store(false, std::memory_order_release);
+              skip_occurred.store(false, std::memory_order_release);
+              skip_end_time.store(Duration::zero(), std::memory_order_release);
+              buffer_index.store(0, std::memory_order_release);
+
+              release_all_keys();
+              timer.start();
+              playback_start_time = std::chrono::steady_clock::now();
+              last_resume_time = playback_start_time;
+
+              display_midi_details(midi_file, new_midi_file_path);
+
+              break;
+
+          }
+          catch (const std::exception& e) {
+              std::cerr << "Error loading new song: " << e.what() << "\n";
+              std::cerr << "Please select a valid MIDI file.\n";
+              Sleep(2500);  
+          }
+      }
+  }
+
+    void load_midi_file(const std::string& initial_midi_file_path) {
+        MidiParser parser;
+        std::string midi_file_path = initial_midi_file_path;
+        bool is_load_successful = false;
+
+        while (!is_load_successful) {
             try {
                 if (!std::filesystem::exists(midi_file_path)) {
                     throw std::runtime_error("File does not exist: " + midi_file_path);
                 }
-
-                midi_file = parser.parse(midi_file_path);
-                successfulllll_load = true;
+                auto midi_file = parser.parse(midi_file_path);
+                is_load_successful = true;
                 process_tracks(midi_file);
                 display_midi_details(midi_file, midi_file_path);
-
             }
             catch (const std::exception& e) {
                 std::cerr << "Error parsing MIDI file: " << midi_file_path << std::endl;
                 std::cerr << "Error details: " << e.what() << std::endl;
-
                 std::cout << "Would you like to select another song? (y/n): ";
                 char response;
                 std::cin >> response;
@@ -2863,7 +2964,7 @@ private:
     {"TOGGLE_88_KEY_MODE", "Toggle 88 Key mode"},
     {"TOGGLE_VOLUME_ADJUSTMENT", "Toggle Automatic Volume"},
     {"TOGGLE_TRANSPOSE_ADJUSTMENT", "Toggle Transpose Engine (Beta)"},
-    {"TOGGLE_ADAPTIVE_TIMER", "High Percision Timer"},
+    {"RESTART_SONG", "Restart current song"},
     {"STOP_AND_EXIT", "Stop and exit"},
     {"TOGGLE_SUSTAIN_MODE", "Toggle Sustain Mode"}
         };
@@ -2927,39 +3028,34 @@ private:
         print_colored_line(separator, ConsoleColor::Cyan);
         setcolor(ConsoleColor::Default);
     }
-
     void process_tracks(const MidiFile& midi_file) {
         note_events.clear();
         tempo_changes.clear();
         timeSignatures.clear();
-
-        double current_time = 0.0;
+        int drums = 0;
+        long double current_time = 0.0L;
         int ticks_per_beat = midi_file.division;
-        double tempo = 500000;  // 120 bpm
+        long double tempo = 500000.0L;  
         int last_tick = 0;
         uint8_t current_numerator = 4;
         uint8_t current_denominator = 4;
         std::vector<int> all_notes;
-        std::vector<double> all_durations;
+        std::vector<long double> all_durations;
         std::vector<std::pair<int, MidiEvent>> all_events;
         std::unordered_map<int, bool> sustain_pedal_state;
-        double last_event_time = 0.0;
-        double first_musical_event_time = -1.0;
-        double last_musical_event_time = 0.0;
-        int total_events = 0;
-        int note_on_events = 0;
-        int note_off_events = 0;
-        std::unordered_map<int, int> notes_per_channel;
+        long double first_musical_event_time = -1.0L;
+        long double last_musical_event_time = 0.0L;
 
         for (const auto& track : midi_file.tracks) {
             for (const auto& event : track.events) {
                 all_events.emplace_back(event.absoluteTick, event);
             }
         }
+
         std::sort(all_events.begin(), all_events.end(),
             [](const auto& a, const auto& b) { return a.first < b.first; });
 
-        std::unordered_map<int, std::unordered_map<int, std::pair<double, int>>> active_notes;
+        std::unordered_map<int, std::unordered_map<int, std::pair<long double, int>>> active_notes;
 
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -2968,19 +3064,20 @@ private:
         std::uniform_real_distribution<> extra_delay(0.0, 1.0);
         std::uniform_real_distribution<> extra_delay_amount(config.legit_mode.EXTRA_DELAY_MIN, config.legit_mode.EXTRA_DELAY_MAX);
 
+
         for (const auto& [tick, event] : all_events) {
-            double elapsed_time = tick2second(tick - last_tick, ticks_per_beat, tempo);
+            long double elapsed_time = tick2second(tick - last_tick, ticks_per_beat, tempo);
 
             if (config.legit_mode.ENABLED) {
-                elapsed_time *= timing_variation(gen);
+                elapsed_time *= static_cast<long double>(timing_variation(gen));
             }
 
             current_time += elapsed_time;
             last_tick = event.absoluteTick;
 
             if (event.status == 0xFF && event.data1 == 0x51 && event.metaData.size() == 3) {
-                tempo = (event.metaData[0] << 16) | (event.metaData[1] << 8) | event.metaData[2];
-                tempo_changes.push_back({ tick, tempo });
+                tempo = static_cast<long double>((event.metaData[0] << 16) | (event.metaData[1] << 8) | event.metaData[2]);
+                tempo_changes.push_back({ tick, static_cast<double>(tempo) });
             }
             else if (event.status == 0xFF && event.data1 == 0x58 && event.metaData.size() == 4) {
                 current_numerator = event.metaData[0];
@@ -3002,72 +3099,89 @@ private:
                 int note = event.data1;
                 int channel = event.status & 0x0F;
                 int velocity = event.data2;
+                
                 std::string note_name = get_note_name(note);
 
                 if (config.legit_mode.ENABLED) {
                     if (note_skip(gen) < config.legit_mode.NOTE_SKIP_CHANCE) {
-                        continue;  // Skip this note lol
+                        continue;
                     }
 
                     if (extra_delay(gen) < config.legit_mode.EXTRA_DELAY_CHANCE) {
-                        double delay = extra_delay_amount(gen);
+                        long double delay = static_cast<long double>(extra_delay_amount(gen));
                         current_time += delay;
                     }
                 }
 
-                if (first_musical_event_time < 0) {
+                if (first_musical_event_time < 0.0L) {
                     first_musical_event_time = current_time;
                 }
                 last_musical_event_time = current_time;
 
                 if ((event.status & 0xF0) == 0x90 && velocity > 0) {
-                    // Note on
-                    note_on_events++;
-                    notes_per_channel[channel]++;
-                    if (active_notes[channel].find(note) != active_notes[channel].end()) {
-                        double start_time = active_notes[channel][note].first;
-                        int prev_velocity = active_notes[channel][note].second;
-                        double duration = current_time - start_time;
-                        add_note_event(current_time, note_name, "release", prev_velocity);
-                        all_notes.push_back(note);
-                        all_durations.push_back(duration);
-                        note_off_events++;
-                    }
-                    active_notes[channel][note] = { current_time, velocity };
-                    add_note_event(current_time, note_name, "press", velocity);
+                    handle_note_on(current_time, channel, note, velocity, active_notes);
                 }
                 else if ((event.status & 0xF0) == 0x80 || ((event.status & 0xF0) == 0x90 && velocity == 0)) {
-                    // Note off 
-                    note_off_events++;
-                    auto it = active_notes[channel].find(note);
-                    if (it != active_notes[channel].end()) {
-                        double start_time = it->second.first;
-                        int off_velocity = it->second.second;
-                        double duration = current_time - start_time;
-                        add_note_event(current_time, note_name, "release", off_velocity);
-                        all_notes.push_back(note);
-                        all_durations.push_back(duration);
-                        active_notes[channel].erase(it);
-                    }
-                    else {
-                        add_note_event(current_time, note_name, "release", 64);
-                    }
+                    handle_note_off(current_time, channel, note, active_notes);
                 }
             }
         }
+
+        release_all_active_notes(current_time, active_notes);
+
+        std::stable_sort(note_events.begin(), note_events.end());
+
+    }
+
+
+    void handle_note_on(long double current_time, int channel, int note, int velocity,
+        std::unordered_map<int, std::unordered_map<int, std::pair<long double, int>>>& active_notes) {
+
+        std::string note_name = get_note_name(note);
+
+        if (active_notes[channel].find(note) != active_notes[channel].end()) {
+            long double start_time = active_notes[channel][note].first;
+            int prev_velocity = active_notes[channel][note].second;
+            long double duration = current_time - start_time;
+            add_note_event(current_time, note_name, "release", prev_velocity);
+            active_notes[channel].erase(note);
+        }
+
+        active_notes[channel][note] = { current_time, velocity };
+        add_note_event(current_time, note_name, "press", velocity);
+    }
+
+    void handle_note_off(long double current_time, int channel, int note,
+        std::unordered_map<int, std::unordered_map<int, std::pair<long double, int>>>& active_notes) {
+
+        std::string note_name = get_note_name(note);
+
+        auto it = active_notes[channel].find(note);
+        if (it != active_notes[channel].end()) {
+            long double start_time = it->second.first;
+            int off_velocity = it->second.second;
+            long double duration = current_time - start_time;
+            add_note_event(current_time, note_name, "release", off_velocity);
+            active_notes[channel].erase(it);
+        }
+        else {
+            add_note_event(current_time, note_name, "release", 64);
+        }
+    }
+
+    void release_all_active_notes(long double current_time,
+        std::unordered_map<int, std::unordered_map<int, std::pair<long double, int>>>& active_notes) {
 
         for (const auto& [channel, notes] : active_notes) {
             for (const auto& [note, note_info] : notes) {
                 std::string note_name = get_note_name(note);
                 add_note_event(current_time, note_name, "release", note_info.second);
-                note_off_events++;
             }
         }
-
-        std::sort(note_events.begin(), note_events.end());
     }
+
 #pragma float_control(precise, on)  
-__forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, long double tempo) noexcept {
+    __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, long double tempo) noexcept {
         constexpr long double MICROS_PER_SECOND = 1000000.0L;
         const long double inv_ticks_per_beat = 1.0L / static_cast<long double>(ticks_per_beat);
         const long double seconds_per_tick = (tempo * inv_ticks_per_beat) / MICROS_PER_SECOND;
@@ -3078,7 +3192,12 @@ __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, l
     inline std::string get_note_name(int midi_note) {
         int octave = (midi_note / 12) - 1;
         int note = midi_note % 12;
-        return std::string(NOTE_NAMES[note]) + std::to_string(octave);
+        if (note >= 0 && note < NOTE_NAMES.size()) {
+            return std::string(NOTE_NAMES[note]) + std::to_string(octave);
+        }
+        else {
+            return "Unknown";
+        }
     }
 
     void add_sustain_event(double time, int channel, int sustainValue) {
@@ -3090,7 +3209,8 @@ __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, l
     void add_note_event(double time, const std::string& note, const std::string& action, int velocity) {
         note_events.push_back({ time, note, action, velocity });
     }
-  inline  void AdjustVolumeBasedOnVelocity(int velocity) noexcept {
+
+    void AdjustVolumeBasedOnVelocity(int velocity) noexcept {
         if (velocity < 0 || velocity >= static_cast<int>(volume_lookup.size())) {
             std::cerr << "error WTF32 report to dev pls thanks" << std::endl;
             return;
@@ -3113,9 +3233,19 @@ __forceinline long double tick2second(uint64_t ticks, uint16_t ticks_per_beat, l
 };
 
 int main() {
-    SetConsoleTitle(L"MIDI++ v1.0.0");
-    VirtualPianoPlayer player;
-    player.main();
+    SetConsoleTitle(L"MIDI++ v1.0.1");
+
+    try {
+        VirtualPianoPlayer player;
+        player.main();
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        std::cerr << "The program will now exit." << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        return 1;
+    }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     return 0;
 }

@@ -2113,7 +2113,8 @@ private:
                     else if (action == "TOGGLE_VOLUME_ADJUSTMENT") toggle_volume_adjustment();
                     else if (action == "TOGGLE_TRANSPOSE_ADJUSTMENT") toggle_transpose_adjustment();
                     else if (action == "STOP_AND_EXIT") stop_and_exit();
-                    else if (action == "RESTART_SONG") restart_song();  // Add this line
+                    else if (action == "RESTART_SONG") restart_song();  
+                    // soon toggle transpose
                     else if (action == "TOGGLE_SUSTAIN_MODE") toggleSustainMode();
                     else std::cerr << "Unknown action: " << action << std::endl;
                     };

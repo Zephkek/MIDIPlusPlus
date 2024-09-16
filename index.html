@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI++: Ultimate Roblox Autoplayer & Piano Bot | Advanced MIDI Automation for Roblox</title>
+    <meta name="google-site-verification" content="_lodgXka5BYofpMJjwdxtuuqy8H5s9Yueg0atlPxDpo" />
+    <meta name="description" content="MIDI++: The ultimate automatic piano player for Roblox. Featuring high-speed MIDI playback, intelligent transposition, and realistic performance simulation. Perfect for all Roblox virtual pianos, including VP2, and ideal for music scripting and beginners.">
+    <meta name="keywords" content="Roblox piano autoplayer, MIDI player script, virtual piano bot, automatic music performance, C++ Roblox script, free piano automation, beginner-friendly tool, MIDIPlusPlus,MIDI++, online autoplayer, Roblox music scripting">
+    <meta name="author" content="MIDI++ Team">
+    <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://zephkek.github.io/MIDIPlusPlus/">
+    <meta property="og:title" content="MIDI++: Advanced Roblox Auto Piano & Music Bot">
+    <meta property="og:description" content="Experience the best Roblox auto piano and music bot with MIDI++. Perfect for VP2 and beginners, featuring high-speed MIDI playback and intelligent features.">
+    <meta property="og:image" content="https://zephkek.github.io/MIDIPlusPlus/images/midi-plus-plus-og.jpg">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://zephkek.github.io/MIDIPlusPlus/">
+    <meta name="twitter:title" content="MIDI++: Roblox Auto Piano & Music Scripting Bot">
+    <meta name="twitter:description" content="Unleash the power of automated piano playing with MIDI++ on Roblox. Ideal for VP2 and beginners, offering unmatched MIDI piano automation.">
+    <meta name="twitter:image" content="https://zephkek.github.io/MIDIPlusPlus/images/midi-plus-plus-twitter.jpg">
+    <link rel="canonical" href="https://zephkek.github.io/MIDIPlusPlus/">
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+    <link rel="manifest" href="/site.webmanifest">
+
+    <!-- Embedded CSS -->
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css');
+
+html, body {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box; /* Include padding and border in element's width and height */
+}
+
+:root {
+    --primary-color: #162447;
+    --secondary-color: #1f4068;
+    --accent-color: #00aaff;
+    --text-color: #333333; /* Changed to dark grey for better contrast */
+    --bg-color: #f5f5f5;
+}
+
+body {
+    font-family: 'Lato', 'Arial', sans-serif; /* Updated font for better readability */
+    line-height: 1.6;
+    color: var(--text-color);
+    background-color: var(--bg-color);
+    margin: 0;
+    padding: 0;
+}
+
+.header {
+
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+    color: var(--bg-color); /* Use background color for text in the header for contrast */
+    padding: 2rem 0;
+    position: relative;
+    overflow: hidden;
+    margin: 0; /* Ensure no margin is added around the header */
+}
+
+.header::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0) 70%);
+    animation: rotate 20s linear infinite;
+}
+
+@keyframes rotate {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 2rem;
+    position: relative;
+    z-index: 1;
+}
+
+.header-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo-title {
+    flex: 1;
+}
+
+.logo-title h1 {
+    font-size: 2.5rem;
+    margin: 0;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+    color: #fff; /* Ensure header text is white for contrast */
+}
+
+.logo-title p {
+    font-size: 1.2rem;
+    margin: 0.5rem 0 0;
+    opacity: 0.9;
+    color: #ddd; /* Slightly lighter color for subtitle */
+}
+
+.header-buttons {
+    display: flex;
+    gap: 1rem;
+}
+
+.btn {
+    padding: 0.75rem 1.5rem;
+    border-radius: 50px;
+    text-decoration: none;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.btn-primary {
+    background-color: var(--accent-color);
+    color: var(--primary-color);
+}
+
+.btn-primary:hover {
+    background-color: #ffffff;
+    color: var(--accent-color);
+}
+
+.btn-secondary {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--bg-color);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.btn-secondary:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+.nav {
+    margin-top: 2rem;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 50px;
+    padding: 0.5rem;
+}
+
+.nav ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+}
+
+.nav li {
+    margin: 0 0.5rem;
+}
+
+.nav a {
+    color: #fff; /* Keep navigation text white for contrast */
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+    border-radius: 25px;
+    transition: all 0.3s ease;
+}
+
+.nav a:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+    color: var(--accent-color); /* Accent color on hover */
+}
+
+@media (max-width: 768px) {
+    .header-content {
+        flex-direction: column;
+        text-align: center;
+    }
+
+    .header-buttons {
+        margin-top: 1rem;
+    }
+
+    .nav ul {
+        flex-wrap: wrap;
+    }
+
+    .nav li {
+        margin: 0.25rem;
+    }
+}
+
+main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 20px;
+}
+
+.section {
+    margin-bottom: 60px;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.section.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.section h2 {
+    color: var(--primary-color);
+    font-size: 2.5em;
+    border-bottom: 2px solid var(--accent-color);
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+
+.section h3 {
+    color: var(--secondary-color);
+    font-size: 1.8em;
+    margin-top: 30px;
+    margin-bottom: 15px;
+}
+
+.section p {
+    color: var(--text-color); /* Consistent text color across sections */
+}
+
+.highlight-box {
+    background-color: rgba(0, 170, 255, 0.1);
+    border-left: 4px solid var(--accent-color);
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 5px;
+    color: var(--text-color); /* Maintain readability */
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    margin-top: 30px;
+}
+
+.feature-item {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.feature-item:hover {
+    transform: translateY(-10px) scale(1.05);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+}
+
+.feature-item i {
+    font-size: 2em;
+    color: var(--accent-color);
+    margin-bottom: 15px;
+}
+
+.video-container {
+    position: relative;
+    padding-bottom: 56.25%;
+    height: 0;
+    overflow: hidden;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.video-container iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+}
+
+footer {
+    background-color: var(--primary-color);
+    color: #ddd; /* Slightly lighter footer text */
+    text-align: center;
+    padding: 20px;
+    margin-top: 40px;
+}
+
+@media (max-width: 768px) {
+    header h1 {
+        font-size: 2.5em;
+    }
+
+    nav ul {
+        flex-direction: column;
+    }
+
+    .feature-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Animation keyframes */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fadeInUp {
+    animation: fadeInUp 1s ease-out;
+}
+
+/* Piano animation styles */
+.piano {
+    display: flex;
+    justify-content: center;
+    margin: 20px 0;
+}
+
+.key {
+    width: 30px;
+    height: 120px;
+    background-color: white;
+    border: 1px solid #000;
+    margin: 0 2px;
+    transition: all 0.3s ease;
+}
+
+.key.black {
+    background-color: black;
+    height: 80px;
+    width: 20px;
+    margin-left: -10px;
+    margin-right: -10px;
+    z-index: 2;
+}
+
+.key.active {
+    background-color: var(--accent-color);
+    transform: translateY(5px);
+}
+
+.transposition-step {
+    background-color: #f0f0f0;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    transition: all 0.3s ease;
+}
+
+.transposition-step:hover {
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+    transform: translateY(-5px);
+}
+
+/* Note highlighting for key estimation */
+.note-highlighting {
+    display: flex;
+    justify-content: space-around;
+    margin: 20px 0;
+}
+
+.note {
+    width: 50px;
+    height: 50px;
+    background-color: var(--accent-color);
+    color: #fff;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 1.5em;
+    border-radius: 50%;
+    opacity: 0.8;
+    animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+    0%,
+    20%,
+    50%,
+    80%,
+    100% {
+        transform: translateY(0);
+    }
+
+    40% {
+        transform: translateY(-15px);
+    }
+
+    60% {
+        transform: translateY(-10px);
+    }
+}
+
+/* Genre icons for genre detection */
+.genre-icons {
+    display: flex;
+    justify-content: space-around;
+    margin: 20px 0;
+}
+
+.genre-icon {
+    font-size: 3em;
+    color: var(--secondary-color);
+    transition: transform 0.3s ease;
+}
+
+.genre-icon:hover {
+    transform: scale(1.2);
+    color: var(--accent-color);
+}
+
+.transposition-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.transposition-option {
+    background-color: #fff;
+    border: 2px solid var(--accent-color);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.transposition-option:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+}
+
+.transposition-option.selected {
+    background-color: var(--accent-color);
+    color: #fff;
+}
+
+    </style>
+</head>
+
+<body>
+   
+    <header class="header">
+        <div class="container">
+            <div class="header-content">
+                <div class="logo-title">
+                    <h1>MIDI++ for Roblox</h1>
+                    <p>The Ultimate Roblox Autoplayer & Piano Bot</p>
+                </div>
+                <div class="header-buttons">
+                    <a href="https://github.com/Zephkek/MIDIPlusPlus/releases/latest" class="btn btn-primary">
+                        <i class="fas fa-download"></i> Download Now
+                    </a>
+                    <a href="https://discord.gg/AbC7De78" class="btn btn-secondary">
+                        <i class="fab fa-discord"></i> Join Discord
+                    </a>
+                    <a href="https://github.com/Zephkek/MIDIPlusPlus" class="btn btn-secondary">
+                        <i class="fab fa-github"></i> View on GitHub
+                    </a>
+                </div>
+            </div>
+            <nav class="nav">
+                <ul>
+                    <li><a href="#overview">Overview</a></li>
+                    <li><a href="#features">Features</a></li>
+                    <li><a href="#how-it-works">How It Works</a></li>
+                    <li><a href="#installation">Installation</a></li>
+                    <li><a href="#usage">Usage Guide</a></li>
+                    <li><a href="#faq">FAQ</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section id="overview" class="section">
+            <h2>Elevate Your Roblox Piano Experience</h2>
+            <p>MIDI++ is an autoplayer designed for Roblox music games that helps automate piano and instrument playing within Roblox, allowing users to perform complex musical pieces, offering features for timing accuracy, and supporting various Roblox music-based experiences with unmatched performance and accuracy unlike other autoplayers.</p>
+            <div class="highlight-box">
+                <h3>Why Choose MIDI++?</h3>
+                <ul>
+                    <li>Blazing-fast MIDI file processing and playback</li>
+                    <li>Intelligent transposition for perfect key matching</li>
+                    <li>Realistic performance simulation features</li>
+                    <li>Advanced error correction for flawless playback</li>
+                    <li>Customizable settings for ultimate control</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="features" class="section">
+            <h2>Unmatched Features for Roblox Autoplay</h2>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <i class="fas fa-tachometer-alt"></i>
+                    <h3>High-Performance Engine</h3>
+                    <p>Enjoy seamless playback of even the most complex MIDI files with our optimized C++ core.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-magic"></i>
+                    <h3>Smart Transposition</h3>
+                    <p>Automatically detect and adjust to the perfect key for any Roblox piano using advanced music theory algorithms.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-user-secret"></i>
+                    <h3>Legit Mode</h3>
+                    <p>Options to simulate human-like performances with customizable timing variations and mistakes.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-sliders-h"></i>
+                    <h3>Advanced Controls</h3>
+                    <p>Fine-tune every aspect of your autoplay experience with our intuitive settings.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-sync-alt"></i>
+                    <h3>Real-Time Adjustments</h3>
+                    <p>Change speed, volume, transposition and other parameters on-the-fly during playback for dynamic performances.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-microchip"></i>
+                    <h3>SIMD Acceleration</h3>
+                    <p>Leverage modern CPU capabilities and optimizations for lightning-fast MIDI processing and playback.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-brain"></i>
+                    <h3>Intelligent MIDI Parsing</h3>
+                    <p>Experience rapid and reliable MIDI file processing with advanced error correction and robust handling of complex and corrupted data structures.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="fas fa-project-diagram"></i>
+                    <h3>Enhanced System Optimization</h3>
+                    <p>Benefit from branch prediction, lock-free queues, custom memory pools and parallel processing, ensuring maximum performance and efficiency.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="how-it-works" class="section">
+            <h2>How MIDI++ Works Its Magic: The Transposition Engine</h2>
+            <p>Our advanced transposition engine sets MIDI++ apart from any other Roblox autoplayer. Let's dive into the sophisticated process that ensures perfect key matching and musical integrity:</p>
+
+            <div class="transposition-step">
+                <h3>Step 1: Analyzing Notes and Durations</h3>
+                <p>The process begins with an in-depth analysis of the MIDI file by extracting each note and its corresponding duration. Every note is converted into its respective pitch class, effectively mapping it within an octave ensuring that every aspect of the piece is understood in its full musical context.</p>
+                <div class="piano">
+                    <div class="key"></div>
+                    <div class="key black"></div>
+                    <div class="key"></div>
+                    <div class="key black"></div>
+                    <div class="key"></div>
+                    <div class="key"></div>
+                    <div class="key black"></div>
+                    <div class="key"></div>
+                    <div class="key black"></div>
+                    <div class="key"></div>
+                    <div class="key black"></div>
+                    <div class="key"></div>
+                </div>
+            </div>
+
+            <div class="transposition-step">
+                <h3>Step 2: Estimating the Key with Precision</h3>
+                <p>Using a highly advanced statistical method, the class estimates the most likely key of the piece. This approach compares the weighted distribution of pitch classes against predefined profiles for both major and minor keys. The algorithm applies custom fine tuned weights to key scale degrees—such as the third, fifth, and seventh—reflecting their critical role in establishing the tonality of the piece and for it to sound good across Roblox games. This results in an estimation of the key that is both accurate and deeply informed by music theory.</p>
+                <div class="note-highlighting">
+                    <div class="note">C</div>
+                    <div class="note">D</div>
+                    <div class="note">E</div>
+                    <div class="note">F</div>
+                    <div class="note">G</div>
+                    <div class="note">A</div>
+                    <div class="note">B</div>
+                </div>
+            </div>
+
+            <div class="transposition-step">
+                <h3>Step 3: Intelligent Genre Detection</h3>
+                <p>With the key firmly established, the system moves on to genre detection—an essential step that influences every subsequent decision. By analyzing a combination of tempo, time signature, instrument diversity, note density, and the complexity of both rhythm and harmony, the system accurately identifies the genre of the piece. This ensures that the final output aligns perfectly with the stylistic conventions and expectations of the identified genre.</p>
+                <div class="genre-icons">
+                    <i class="fas fa-headphones genre-icon"></i>
+                    <i class="fas fa-guitar genre-icon"></i>
+                    <i class="fas fa-music genre-icon"></i>
+                    <i class="fas fa-drum genre-icon"></i>
+                </div>
+            </div>
+
+            <div class="transposition-step">
+                <h3>Step 4: Evaluating Transposition Options with Unmatched Nuance</h3>
+                <p>This is where the Transpose Engine truly shines. The system evaluates multiple transposition options, simulating how each one would impact the piece's overall playability, key signature complexity, chord progression, harmonic tension, and genre-specific nuances. The scoring system used in this evaluation is extraordinarily detailed:</p>
+                <div class="transposition-grid">
+                    <div class="transposition-option">Option 1: +2 semitones</div>
+                    <div class="transposition-option selected">Option 2: +3 semitones</div>
+                    <div class="transposition-option">Option 3: +5 semitones</div>
+                </div>
+            </div>
+
+            <div class="transposition-step">
+                <h3>Step 5: Making the Final Decision</h3>
+                <p>After thoroughly scoring each transposition option, the system selects the one with the highest overall score. This decision is the culmination of a process that balances musicality, playability, and stylistic appropriateness. The final transposition isn't just the easiest to play—it's the one that best preserves the integrity and expressive potential of the original piece, while also enhancing it in ways that align with the genre and other statistical data.</p>
+                <div class="highlight-box">
+                    <p>Selected Transposition: +3 semitones</p>
+                </div>
+            </div>
+        </section>
+        <section id="installation" class="section">
+            <h2>Quick Start Guide</h2>
+            <p>Get MIDI++ up and running in just a few simple steps:</p>
+
+            <ol>
+                <li>Install <a href="https://aka.ms/vs/17/release/vc_redist.x64.exe">Microsoft Visual C++ Redistributable (x64)</a></li>
+                <li>Download the latest version of MIDI++ from our <a href="https://github.com/Zephkek/MIDIPlusPlus/releases/latest">GitHub Releases page</a></li>
+                <li>Extract the downloaded package to your preferred location</li>
+                <li>Place your MIDI files in the "midi" folder within the extracted directory</li>
+                <li>Launch MIDI++ and start creating amazing Roblox piano performances!</li>
+            </ol>
+
+            <div class="highlight-box">
+                <h3>System Requirements:</h3>
+                <ul>
+                    <li>Windows 10 or later (64-bit)</li>
+                    <li>CPU with AVX2 support (most processors from 2013 onwards)</li>
+                    <li>Microsoft Visual C++ Redistributable 2022 (x64)</li>
+                    <li>100MB free disk space</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="usage" class="section">
+            <h2>Mastering MIDI++</h2>
+            <p>Unlock the full potential of MIDI++ with these advanced usage tips:</p>
+
+            <h3>Authenticity Mode Settings</h3>
+            <div class="json-editor">
+                <pre><code>{
+  "LEGIT_MODE_SETTINGS": {
+    "ENABLED": true,
+    "TIMING_VARIATION": 0.1,
+    "NOTE_SKIP_CHANCE": 0.02,
+    "EXTRA_DELAY_CHANCE": 0.05,
+    "EXTRA_DELAY_MIN": 0.05,
+    "EXTRA_DELAY_MAX": 0.2
+  }
+}</code></pre>
+            </div>
+            <p>These settings allow you to fine-tune the human-like performance aspects of MIDI++, making your Roblox piano performances more natural and less detectable.</p>
+
+            <h3>Volume Control</h3>
+            <div class="json-editor">
+                <pre><code>{
+    "VOLUME_SETTINGS": {
+        "MIN_VOLUME": 10,
+        "MAX_VOLUME": 200,
+        "INITIAL_VOLUME": 100,
+        "VOLUME_STEP": 10,
+        "ADJUSTMENT_INTERVAL_MS": 50
+    }
+}</code></pre>
+            </div>
+            <p>Customize your volume settings for perfect audio levels in any Roblox game or situation.</p>
+
+            <div class="highlight-box">
+                <h3>Pro Tips:</h3>
+                <ul>
+                    <li>Experiment with different Authenticity Mode settings to find the perfect balance between performance and realism.</li>
+                    <li>Use real-time controls to adjust tempo and volume during playback for dynamic performances.</li>
+                    <li>Leverage the advanced transposition feature to adapt songs to different Roblox piano layouts automatically.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="faq" class="section">
+            <h2>Frequently Asked Questions</h2>
+
+            <div class="faq-item">
+                <h3>What makes MIDI++ stand out from other Roblox autoplayers?</h3>
+                <p>MIDI++ is in a league of its own. Our unique features, like the advanced transposition engine powered by music theory, take autoplay to a whole new level. The technical superiority of MIDI++ is unmatched, with lock-free programming, custom memory allocators, SIMD acceleration, and branch prediction optimization. It outperforms any existing Python-based solution, offering unparalleled speed and efficiency for Roblox piano automation.</p>
+            </div>
+
+            <div class="faq-item">
+                <h3>How versatile is MIDI++ across different Roblox piano games?</h3>
+                <p>MIDI++ is designed for maximum compatibility. Thanks to its remappable keys feature in the config.json file, you can create custom configurations for specific games. This flexibility ensures that MIDI++ is compatible with virtually all Roblox piano games, adapting seamlessly to different layouts and requirements.</p>
+            </div>
+
+            <div class="faq-item">
+                <h3>Can MIDI++ handle complex musical arrangements?</h3>
+                <p>Absolutely! MIDI++ excels at processing and playing even the most intricate MIDI files. Our advanced parsing algorithms, combined with the power of C++ and optimized memory management, allow MIDI++ to handle complex arrangements with ease, ensuring smooth and accurate playback of challenging pieces.</p>
+            </div>
+
+            <div class="faq-item">
+                <h3>How user-friendly is MIDI++ for beginners?</h3>
+                <p>While MIDI++ is packed with advanced features, we've designed it with user-friendliness in mind. The intuitive interface makes it accessible for beginners, while still offering depth for experienced users. Our comprehensive documentation and active community support ensure that users of all skill levels can make the most of MIDI++'s powerful capabilities.</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2024 MIDI++. All rights reserved.
+    </footer>
+
+    <!-- Embedded JavaScript for animations -->
+    <script>
+        function animateOnScroll(elements, options) {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.style.opacity = '1';
+                        entry.target.style.transform = 'translateY(0)';
+                    }
+                });
+            }, options);
+
+            elements.forEach(el => observer.observe(el));
+        }
+
+        function animatePiano() {
+            const keys = document.querySelectorAll('.key');
+            setInterval(() => {
+                const randomKey = keys[Math.floor(Math.random() * keys.length)];
+                randomKey.classList.add('active');
+                setTimeout(() => {
+                    randomKey.classList.remove('active');
+                }, 300);
+            }, 500);
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            const sections = document.querySelectorAll('.section');
+            animateOnScroll(sections, {
+                threshold: 0.1
+            });
+
+            animatePiano();
+        });
+    </script>
+</body>
+
+</html>

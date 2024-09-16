@@ -15,9 +15,8 @@
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 [![Stars](https://img.shields.io/github/stars/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/stargazers)
 [![Issues](https://img.shields.io/github/issues/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/issues)
-
 [![Download Now](https://img.shields.io/badge/Download%20Now-▼-brightgreen?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Zephkek/MIDIPlusPlus/releases/latest)
-[![Discord](https://img.shields.io/badge/Join%20Our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/AbC7De78)
+
 
 </div>
 
@@ -37,27 +36,25 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 - **Authenticity Mode**: Simulated human-like performance with adjustable realism settings
 - **Extended Functionality**: Sustain pedal support, 88-key mode, automatic MIDI file error correction
 - **Advanced Analysis**: Chord and rhythm pattern recognition, harmonic structure analysis
-- **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, SIMD acceleration
-- **Customization**: Flexible configuration options and performance-enhancing hotkeys
+- **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, SIMD acceleration using manual vectorization in critical parts of the code to ensure these parts are always optimized.
+- **Customization**: Flexible configuration options
 
 ## Technical Superiority
 
-- Built in C++ for maximum speed and efficiency
 - Utilizes advanced data structures and algorithms for optimal performance
-- Implements SIMD instructions for parallel processing
 - Features custom memory management for reduced overhead
 - Employs lock-free programming techniques for enhanced concurrency
 - Optimizied to the max with branch prediction and PGO
   
 ## Showcase:
-| [![CPU Usage and Stability](https://img.youtube.com/vi/gAQ-5ZlYjUQ/0.jpg)](https://www.youtube.com/watch?v=gAQ-5ZlYjUQ) | [![Features Showcase](https://img.youtube.com/vi/lyK05EK6e2A/0.jpg)](https://www.youtube.com/watch?v=lyK05EK6e2A) |
+| [![Stress Test N°1 7m Notes](https://img.youtube.com/vi/aAmGCW7o55c/0.jpg)](https://www.youtube.com/watch?v=aAmGCW7o55c) | [![Features Showcase](https://img.youtube.com/vi/ajsBSaO1icQ/0.jpg)](https://www.youtube.com/watch?v=ajsBSaO1icQ) |
 |---|---|
-| Video 1 | Video 2 |
+| Stress Test N°1 7m Notes (Loud) | Transposition Engine Test |
 
 ## Installation
 
 1. Install Microsoft Visual C++ Redistributable (x64) from [here](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-2. Download MIDI++ from the [Release Page](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/Release)
+2. Download MIDI++ from the [Release Page](https://github.com/Zephkek/MIDIPlusPlus/releases/tag/v1.0.2)
 3. Extract the package and place MIDI files in the "midi" folder
 4. Launch MIDI++ to begin
 
@@ -124,7 +121,6 @@ The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON
 ### Special Thanks
 
 Special thanks to these cool individuals for their invaluable contributions and support:
-
 - **Raven**
 - **Anger**
 - **Gene**
@@ -180,9 +176,5 @@ This license explicitly forbids:
 
 For more details, see the [LICENSE](LICENSE) file in this repository or visit [GNU GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html).
 ---
-
-<div align="center">
-
-**MIDI++: Elevating Roblox Piano Performance**
 
 </div>

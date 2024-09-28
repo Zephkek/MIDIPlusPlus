@@ -33,7 +33,7 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 - **Customization**:  customize keys using clean, dynamic mappings with proper data structures (ever heard of constexpr maps or std::array?), unlike the brute-force hardcoded disaster dogwater code that's out there for midi to qwerty conversion or "eumlation" lmfao.
 ## Technical Superiority
 
-- Uses efficient data structures for performance (no endless hardcoded "sets").
+- Uses efficient data structures for performance (unlike some clunky, error-prone mess of hardcoded mappings and repeated assignments—ever heard of loops, maps, or even basic code organization lmfao?).
 - Features custom memory management for reduced overhead 
 - Employs lock-free programming techniques for enhanced concurrency (moodycamel)
 - Optimizied to the max with branch prediction and PGO (and somehow not false positives after that! amazing.)

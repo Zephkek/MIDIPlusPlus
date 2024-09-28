@@ -116,16 +116,6 @@ The following table explains the settings used in the `LEGIT_MODE_SETTINGS` JSON
     }
 }
 ```
-## Acknowledgements
-
-### Special Thanks
-
-Special thanks to these cool individuals for their invaluable contributions and support:
-- **Raven**
-- **Anger**
-- **Gene**
-
-Your dedication and expertise have been crucial to the development of MIDI++.
 
 ### External Libraries
 

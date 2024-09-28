@@ -30,7 +30,7 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 - **Authenticity Mode**: Basic "human like behaviour" (not really)
 - **Extended Functionality**: Sustain pedal support, 88-key mode, automatic MIDI file error correction
 - **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, manual vectorization in critical parts of the code to ensure these parts are always optimized because guess what? auto vectorization is not always guranteed, what a shock!.
-- **Customization**:  customize keys using clean, dynamic mappings with proper data structures (ever heard of constexpr maps or std::array?), unlike the brute-force hardcoded disaster dogwater code that's out there for midi to qwerty conversion.
+- **Customization**:  customize keys using clean, dynamic mappings with proper data structures (ever heard of constexpr maps or std::array?), unlike the brute-force hardcoded disaster dogwater code that's out there for midi to qwerty conversion or "eumlation" lmfao.
 ## Technical Superiority
 
 - Utilizes advanced data structures and algorithms for optimal performance

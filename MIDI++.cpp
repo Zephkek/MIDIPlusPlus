@@ -1987,7 +1987,7 @@ public:
         setcolor(ConsoleColor::Green);
         std::string contributors[] = {
             "        Zeph      : Main software developer, C++ implementation",
-            "    Anger/Raven   : Provided insights with original Python code PyMidi",
+            "        Anger     : Provided insights with original Python code from PyMidi",
             "        Gene      : Assisted with extensive testing and validation"
         };
         for (const auto& line : contributors) {
@@ -2664,7 +2664,7 @@ private:
             KeyPress(key, false);
         }
     }
-    void release_all_keys() {
+    void release_all_keys() { //todo: im fucking lazy but add release code for space, because sustain breaks when pausing somtimes due to the key up event not being sent before a new keydown, fuck roblox x2
         const auto& current_mappings = eightyEightKeyModeActive ? full_key_mappings : limited_key_mappings;
         for (const auto& [note, key] : current_mappings) {
             KeyPress(key, false);

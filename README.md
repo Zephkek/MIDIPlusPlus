@@ -23,20 +23,20 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 ## Key Features
 - **Powerful MIDI Parser**: Battle tested parser, against all kinds of fucked up midi files that Gene comes up with, shout out to him.
 - **Transpose Engine**: Intelligent key detection, genre-specific transposition, and advanced harmonic analysis (for whoever even uses this anyway)
-- **Performance Optimization**: C++, over optimized as shit.
+- **Performance Optimization**: C++, overkill, overoptimized, probably not a big difference, only this that will ever make it faster is making it multithreaded, which you can do yourself.
 - **MIDI-to-QWERTY Conversion**: Yeah simple conversion, straight forward no spghetti qwerty emulation code like some shitty code out there.
 - **Tempo Management**: gets the tempo of the midi files in real time properly, no more typing what tempo you need!
-- **Volume Control**: Velocity-sensitive playback and dynamic volume modulation to try and simulate depth on sh*t pianos that don't even handle any of that properly.
+- **Volume Control**: Velocity-sensitive playback and dynamic volume modulation to try and simulate depth on pianos that don't even handle any of that properly.
 - **Authenticity Mode**: Basic "human like behaviour" (not really)
-- **Extended Functionality**: Sustain pedal support, 88-key mode, automatic MIDI file error correction
+- **Extended Functionality**: Sustain pedal support, 88-key mode, automatic MIDI file error correction (isn't gonna fix anything to do with headers or invalid tracks, will ATTEMPT to fix out of range values while keeping some level of security)
 - **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, manual vectorization in critical parts of the code to ensure these parts are always optimized because guess what? auto vectorization is not always guranteed, what a shock!.
 - **Customization**:  customize keys using clean, dynamic mappings with proper data structures (ever heard of constexpr maps or std::array?), unlike the brute-force hardcoded disaster dogwater code that's out there for midi to qwerty conversion or "eumlation" lmfao.
 ## Technical Superiority
 
-- Utilizes advanced data structures and algorithms for optimal performance
-- Features custom memory management for reduced overhead
-- Employs lock-free programming techniques for enhanced concurrency
-- Optimizied to the max with branch prediction and PGO
+- Uses efficient data structures for performance (no endless hardcoded "sets").
+- Features custom memory management for reduced overhead 
+- Employs lock-free programming techniques for enhanced concurrency (moodycamel)
+- Optimizied to the max with branch prediction and PGO (and somehow not false positives after that! amazing.)
   
 ## Showcase:
 | [![Stress Test N°1 7m Notes](https://img.youtube.com/vi/aAmGCW7o55c/0.jpg)](https://www.youtube.com/watch?v=aAmGCW7o55c) | [![Features Showcase](https://img.youtube.com/vi/ajsBSaO1icQ/0.jpg)](https://www.youtube.com/watch?v=ajsBSaO1icQ) |

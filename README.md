@@ -23,7 +23,7 @@ MIDI++ is a high-performance C++ application designed for playing MIDI files on 
 ## Key Features
 - **Powerful MIDI Parser**: Battle tested parser, against all kinds of fucked up midi files that Gene comes up with, shout out to him.
 - **Transpose Engine**: Intelligent key detection, genre-specific transposition, and advanced harmonic analysis (for whoever even uses this anyway)
-- **Performance Optimization**: C++, overkill, overoptimized, probably not a big difference, only this that will ever make it faster is making it multithreaded, which you can do yourself.
+- **Performance Optimization**: C++, overkill, overoptimized, probably not a big difference, only thing that will ever make it faster is making it multithreaded, which you can do yourself.
 - **MIDI-to-QWERTY Conversion**: Yeah simple conversion, straight forward no spghetti qwerty emulation code like some shitty code out there.
 - **Tempo Management**: gets the tempo of the midi files in real time properly, no more typing what tempo you need!
 - **Volume Control**: Velocity-sensitive playback and dynamic volume modulation to try and simulate depth on pianos that don't even handle any of that properly.

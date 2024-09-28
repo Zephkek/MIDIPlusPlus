@@ -21,18 +21,16 @@
 MIDI++ is a high-performance C++ application designed for playing MIDI files on Roblox pianos with exceptional accuracy and speed. It offers unparalleled precision and advanced features for music enthusiasts and Roblox players.
 
 ## Key Features
-- **Powerful MIDI Parser**: Rapidly processes MIDI files, handling complex structures and corrupted data with ease for reliable playback.
-- **Transpose Engine**: Intelligent key detection, genre-specific transposition, and advanced harmonic analysis
-- **Performance Optimization**: C++ architecture, high-capacity data handling, nanosecond precision timing
-- **MIDI-to-QWERTY Conversion**: Seamless Roblox piano integration with customizable key mappings
-- **Tempo Management**: Real-time adjustments with smooth transition handling
-- **Volume Control**: Velocity-sensitive playback and dynamic volume modulation
-- **Authenticity Mode**: Simulated human-like performance with adjustable realism settings
+- **Powerful MIDI Parser**: Battle tested parser, against all kinds of fucked up midi files that Gene comes up with, shout out to him.
+- **Transpose Engine**: Intelligent key detection, genre-specific transposition, and advanced harmonic analysis (for whoever even uses this anyway)
+- **Performance Optimization**: C++, over optimized as shit.
+- **MIDI-to-QWERTY Conversion**: Yeah simple conversion, straight forward no spghetti qwerty emulation code like some shitty code out there.
+- **Tempo Management**: gets the tempo of the midi files in real time properly, no more typing what tempo you need!
+- **Volume Control**: Velocity-sensitive playback and dynamic volume modulation to try and simulate depth on sh*t pianos that don't even handle any of that properly.
+- **Authenticity Mode**: Basic "human like behaviour" (not really)
 - **Extended Functionality**: Sustain pedal support, 88-key mode, automatic MIDI file error correction
-- **Advanced Analysis**: Chord and rhythm pattern recognition, harmonic structure analysis
-- **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, SIMD acceleration using manual vectorization in critical parts of the code to ensure these parts are always optimized.
-- **Customization**: Flexible configuration options
-
+- **System Optimization**: Efficient event handling, custom memory pools, lock-free queues, manual vectorization in critical parts of the code to ensure these parts are always optimized because guess what? auto vectorization is not always guranteed, what a shock!.
+- **Customization**:  customize keys using clean, dynamic mappings with proper data structures (ever heard of constexpr maps or std::array?), unlike the brute-force hardcoded disaster dogwater code that's out there for midi to qwerty conversion.
 ## Technical Superiority
 
 - Utilizes advanced data structures and algorithms for optimal performance

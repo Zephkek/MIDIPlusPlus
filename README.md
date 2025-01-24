@@ -12,6 +12,8 @@
 
 </div>
 
+
+
 MIDI++ v1.0.4 is an advanced MIDI Autoplayer and MIDI to Qwerty conversion program, developed over five months of intensive optimization and real-world testing. It combines the fastest MIDI-to-QWERTY conversion engine available with an also unmatched auto-player system, setting new standards for both live play and automated performance.
 
 ### Perfect for Both Live Players and Auto-Performance

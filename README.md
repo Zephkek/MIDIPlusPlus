@@ -2,10 +2,7 @@
 
 <img src="https://github.com/user-attachments/assets/07ee6238-43bc-4080-8514-84848d499851" alt="MIDI++ Logo" width="400"/>
 
-# MIDI++ v1.0.4
-
-[![Release](https://img.shields.io/github/v/release/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github&color=blue)](https://github.com/Zephkek/MIDIPlusPlus/releases)
-[![License](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+# MIDI++ 
 [![Stars](https://img.shields.io/github/stars/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/stargazers)
 [![Issues](https://img.shields.io/github/issues/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/issues)
 [![Download Now](https://img.shields.io/badge/Download%20Now-▼-brightgreen?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Zephkek/MIDIPlusPlus/releases/latest)

@@ -21,9 +21,9 @@ MIDI++ v1.0.4 is an advanced MIDI Autoplayer and MIDI to Qwerty conversion progr
 ### What Sets MIDI++ Apart
 - Built from the ground up for maximum performance
 - Optimized specifically for virtual piano applications
-- Uses cutting-edge hardware acceleration techniques
 - Maintains perfect timing even under extreme load
 - Developed and tested by professional virtual pianists and Audio engineers.
+
 
 ## Performance Benchmarks
 
@@ -33,9 +33,10 @@ MIDI++ v1.0.4 is an advanced MIDI Autoplayer and MIDI to Qwerty conversion progr
 - **CPU Usage**: 2-5% average on modern processors
 - **Timing Precision**: Nanosecond accuracy using advanced Timing algorithms that have been tested for months.
 - **Throughput**: Can handle millions of notes per minute while maintaining stability and accuracy.
-## Advanced Velocity System
+- 
+## 32 Step Velocity System
 
-MIDI++ uses a unique 32-key velocity mapping system that converts MIDI velocities (0-127) into keyboard inputs. This system provides precise control over note dynamics while maintaining ultra-low latency.
+MIDI++ uses a 32-key velocity mapping system that converts MIDI velocities (0-127) into keyboard inputs. This system provides precise control over note dynamics while maintaining ultra-low latency.
 
 ### 32-Key Velocity Mapping
 
@@ -97,43 +98,14 @@ Example custom curve configuration:
 ```
 
 The system will automatically interpolate between these values to ensure smooth velocity transitions during play.
-
-## Core Technical Features
-
-### Unmatched MIDI-to-QWERTY Performance
-- **Zero-Copy Pipeline**: Direct MIDI input to keypress without intermediate buffers
-- **Kernel-Level Timing**: Uses Windows MMCSS (Multimedia Class Scheduler Service) for real-time priority
-- **Hardware-Accelerated Processing**: AVX2 SIMD optimization for velocity calculations
-- **Lock-Free Architecture**: Custom concurrent queues eliminate thread contention
-- **Adaptive Batch Processing**: Dynamically adjusts batch sizes based on input velocity
-- **Intelligent Key Mapping**: Optimized for both 61-key and 88-key layouts with zero overhead switching
-- **Experience**: Developped and enhanced by people who work in the industry and have experience with real time audio processing.
-
-### Advanced Note Processing Engine
-- **TSC-Based Timing**: Uses CPU timestamp counter for sub-microsecond precision
-- **Predictive Note Handling**: Smart FIFO/LIFO switching based on play patterns
-- **Memory-Aligned Structures**: Custom allocators with cache line optimization
-- **Zero-Allocation Hot Path**: Pre-allocated thread-local buffers for key events
-
-
-### Real-Time Features
-
-#### Precision Volume Control
-- Microsecond-accurate volume adjustments
-- Adaptive step size based on velocity
-- Automatic volume calibration
-- Zero latency response to velocity changes
-
-#### Sustain Pedal Optimization
-- Three precision modes (IG/UP/DOWN)
-- Configurable cutoff with real-time adjustment
-- Zero-latency pedal response
-- Intelligent pedal state tracking
+### Velocity Curve editor:
+![image](https://github.com/user-attachments/assets/cf4e7b75-13a6-40c3-8a63-0d491ade4c92)
 
 ## System Requirements
 
 - Windows 10/11 64-bit
 - Visual C++ Redistributable 2022
+- CPU that supports AVX2
 
 ## Configuration Guide
 

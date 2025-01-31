@@ -33,7 +33,7 @@ MIDI++ v1.0.4 is an advanced MIDI Autoplayer and MIDI to Qwerty conversion progr
 - **CPU Usage**: 2-5% average on modern processors
 - **Timing Precision**: Nanosecond accuracy using advanced Timing algorithms that have been tested for months.
 - **Throughput**: Can handle millions of notes per minute while maintaining stability and accuracy.
-- 
+
 ## 32 Step Velocity System
 
 MIDI++ uses a 32-key velocity mapping system that converts MIDI velocities (0-127) into keyboard inputs. This system provides precise control over note dynamics while maintaining ultra-low latency.

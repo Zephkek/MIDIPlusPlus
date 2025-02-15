@@ -137,7 +137,9 @@ https://github.com/user-attachments/assets/22f449d6-dd8b-450b-b743-2adbc044109b
 
 *Thanks to the amazing feedback of our community and especially Testers MIDI++'s stability has been enhanced through all kinds of scenarios*
 ### Remappable keys to fit any game:
-https://github.com/user-attachments/assets/27000e69-e44f-49ab-b577-fccb9d681be2
+
+https://github.com/user-attachments/assets/f5f9809a-259f-46b8-8ee2-dbd527d0baef
+
 
 ### Advanced Track Management
 ![image](https://github.com/user-attachments/assets/c2258f81-d57a-4c06-ac1f-0b69a5f6566e)

@@ -140,8 +140,8 @@ https://github.com/user-attachments/assets/22f449d6-dd8b-450b-b743-2adbc044109b
 https://github.com/user-attachments/assets/27000e69-e44f-49ab-b577-fccb9d681be2
 
 ### Advanced Track Management
+![image](https://github.com/user-attachments/assets/c2258f81-d57a-4c06-ac1f-0b69a5f6566e)
 
-[image](https://github.com/user-attachments/assets/673565d8-c971-4aaa-a98c-ee74c8a1e30d)
 
 *Comprehensive track control allowing you to mute, solo any track in real time with instrument detection capabilities*
 

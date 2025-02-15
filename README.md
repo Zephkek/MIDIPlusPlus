@@ -136,9 +136,12 @@ https://github.com/user-attachments/assets/3b567203-da44-4a30-969d-6831ef1c6067
 https://github.com/user-attachments/assets/22f449d6-dd8b-450b-b743-2adbc044109b
 
 *Thanks to the amazing feedback of our community and especially Testers MIDI++'s stability has been enhanced through all kinds of scenarios*
+### Remappable keys to fit any game:
+https://github.com/user-attachments/assets/27000e69-e44f-49ab-b577-fccb9d681be2
 
 ### Advanced Track Management
-![image](https://github.com/user-attachments/assets/673565d8-c971-4aaa-a98c-ee74c8a1e30d)
+
+[image](https://github.com/user-attachments/assets/673565d8-c971-4aaa-a98c-ee74c8a1e30d)
 
 *Comprehensive track control allowing you to mute, solo any track in real time with instrument detection capabilities*
 

@@ -7,9 +7,10 @@
 [![Issues](https://img.shields.io/github/issues/Zephkek/MIDIPlusPlus?style=for-the-badge&logo=github)](https://github.com/Zephkek/MIDIPlusPlus/issues)
 [![Download Now](https://img.shields.io/badge/Download%20Now-▼-brightgreen?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Zephkek/MIDIPlusPlus/releases/latest)
 
+[![Users Love Us](https://img.shields.io/badge/SourceForge-Users%20Love%20Us-orange?style=for-the-badge&logo=sourceforge)](https://sourceforge.net/projects/midiplusplus/)
+[![Rising Star](https://img.shields.io/badge/SourceForge-Rising%20Star-orange?style=for-the-badge&logo=sourceforge)](https://sourceforge.net/projects/midiplusplus/)
+
 </div>
-
-
 
 MIDI++ v1.0.4 is an advanced MIDI Autoplayer and MIDI to Qwerty conversion program, developed over five months of intensive optimization and real-world testing. It combines the fastest MIDI-to-QWERTY conversion engine available with an also unmatched auto-player system, setting new standards for both live play and automated performance.
 
@@ -23,7 +24,6 @@ MIDI++ v1.0.4 is an advanced MIDI Autoplayer and MIDI to Qwerty conversion progr
 - Optimized specifically for virtual piano applications
 - Maintains perfect timing even under extreme load
 - Developed and tested by professional virtual pianists and Audio engineers.
-
 
 ## Performance Benchmarks
 
@@ -98,6 +98,7 @@ Example custom curve configuration:
 ```
 
 The system will automatically interpolate between these values to ensure smooth velocity transitions during play.
+
 ### Velocity Curve editor:
 ![image](https://github.com/user-attachments/assets/cf4e7b75-13a6-40c3-8a63-0d491ade4c92)
 
@@ -159,6 +160,5 @@ We would like to extend our deepest gratitude to all the individuals who have co
   
 - **Contributors & Collaborators**  
   *Thank you for your code contributions, bug reports, and feature requests that have helped shape MIDI++.*
-
 
 ---

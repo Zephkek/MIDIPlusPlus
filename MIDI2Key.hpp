@@ -19,7 +19,7 @@ class RtMidiError;
 
 class MIDI2Key {
 public:
-    // Pass a pointer to your VirtualPianoPlayer instance.
+    // Pass a pointer to your VirtualPianoPlayer instance (this entire thing will probably need to be fucking rewritten anyway lmfao)
     MIDI2Key(VirtualPianoPlayer* player);
     ~MIDI2Key();
 

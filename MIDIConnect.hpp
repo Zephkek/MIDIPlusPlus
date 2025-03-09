@@ -6,7 +6,7 @@
 #include <vector>
 #include <windows.h>
 
-// Forward declaration for RtMidiIn (assumed to be provided by your RtMidi library)
+// Forward declaration for RtMidiIn (assumed to be provided by your RtMidi library (use latest) also supports the built in windows MM library if you ever wanna use that but not recommended doing it directly)
 class RtMidiIn;
 
 class MIDIConnect {
@@ -32,7 +32,7 @@ private:
     int m_selectedDevice;
     std::atomic<bool> m_isActive;
 
-    // Predefined mapping: for each numpad key the ìdownî and ìupî scan codes.
+    // Predefined mapping: for each numpad key the ‚Äúdown‚Äù and ‚Äúup‚Äù scan codes.
     // These are used during precomputation.
     static constexpr struct {
         WORD down;

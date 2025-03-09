@@ -1,0 +1,327 @@
+﻿// PlaybackSystem.hpp
+#ifndef PLAYBACK_SYSTEM_HPP
+#define PLAYBACK_SYSTEM_HPP
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#pragma once
+class VirtualPianoPlayer; 
+extern VirtualPianoPlayer* g_player;
+
+#include <windows.h>
+#include <windowsx.h>
+#include <avrt.h>         // MMCSS
+#include <atomic>
+#include <cstdint>
+#include <vector>
+#include <string>
+#include <string_view>
+#include <map>
+#include <unordered_map>
+#include <set>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <future>
+#include <memory>
+#include <array>
+#include <functional>
+#include <stdexcept>
+#include <algorithm>
+#include <filesystem>
+#include <random>
+#include <chrono>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <numeric>
+
+#include "resource.h"
+#include "config.hpp"
+#include "Transpose.h"
+#include "json.hpp"
+#include "midi_parser.h"
+#include "thread_pool.h"
+
+struct MidiFile;
+struct TimeSignature;
+
+// Global variables
+extern double g_totalSongSeconds;
+extern int    g_sustainCutoff;
+
+// ========================
+// Sustain Mode Enumeration
+// ========================
+enum class SustainMode {
+    IG,
+    SPACE_DOWN,
+    SPACE_UP
+};
+
+// ==================================================
+// NoteEvent: a simple note event (aligned to cache line)
+// ==================================================
+struct alignas(64) NoteEvent {
+    std::chrono::nanoseconds time;
+    std::string_view note;
+    bool isPress;
+    int velocity;
+    bool isSustain;
+    int sustainValue;
+    int trackIndex;
+
+    NoteEvent() noexcept;
+    NoteEvent(std::chrono::nanoseconds t,
+        std::string_view n,
+        bool p,
+        int v,
+        bool s,
+        int sv,
+        int trackIdx) noexcept;
+
+    bool operator>(const NoteEvent& other) const noexcept;
+};
+
+// ==================================================
+// NoteEventPool: a fast allocator for note events
+// ==================================================
+class alignas(64) NoteEventPool {
+public:
+    NoteEventPool();
+    ~NoteEventPool();
+
+    template<typename... Args>
+    NoteEvent* allocate(Args&&... args) {
+        if (current + sizeof(NoteEvent) > end) {
+            allocateNewBlock();
+        }
+        NoteEvent* event = new (current) NoteEvent(std::forward<Args>(args)...);
+        current += sizeof(NoteEvent);
+        allocated_count.fetch_add(1, std::memory_order_relaxed);
+        return event;
+    }
+
+    void reset();
+    size_t getAllocatedCount() const;
+
+private:
+    static constexpr size_t CACHE_LINE_SIZE = 64;
+    static constexpr size_t BLOCK_SIZE = 1024 * 1024;
+
+    struct alignas(CACHE_LINE_SIZE) Block {
+        char data[BLOCK_SIZE];
+        Block* next;
+    };
+
+    Block* head;
+    char* current;
+    char* end;
+    std::atomic<size_t> allocated_count;
+
+    void allocateNewBlock();
+};
+
+// ==================================================
+// PlaybackControl: Simple playback-control commands
+// ==================================================
+class PlaybackControl {
+public:
+    enum class Command {
+        NONE,
+        SKIP,
+        REWIND,
+        RESTART
+    };
+
+    struct State {
+        std::chrono::nanoseconds position{ 0 };
+        size_t event_index{ 0 };
+        bool needs_reset{ false };
+    };
+
+    void requestSkip(std::chrono::seconds amount);
+    void requestRewind(std::chrono::seconds amount);
+
+    bool hasCommand() const;
+    State processCommand(const State& current_state, double speed, size_t buffer_size);
+
+private:
+    mutable std::mutex mutex;
+    Command pending_command{ Command::NONE };
+    std::chrono::seconds command_amount{ 0 };
+    std::atomic<bool> command_processed{ true };
+};
+
+// --------------------------------------------------
+// RawNoteEvent: holds raw note data using string_view
+// --------------------------------------------------
+struct RawNoteEvent {
+    std::chrono::nanoseconds time;
+    std::string_view note_or_control;
+    std::string_view action;
+    int velocity;
+    int trackIndex;
+};
+
+// ==================================================
+// VirtualPianoPlayer: The main virtual piano playback class
+// ==================================================
+class VirtualPianoPlayer {
+public:
+    VirtualPianoPlayer() noexcept(false);
+    ~VirtualPianoPlayer();
+
+    // Track Mute/Solo
+    void set_track_mute(size_t trackIndex, bool mute);
+    void set_track_solo(size_t trackIndex, bool solo);
+
+    // Playback Control
+    void toggle_play_pause();
+    void skip(std::chrono::seconds duration);
+    void rewind(std::chrono::seconds duration);
+    void restart_song();
+    void speed_up();
+    void slow_down();
+    void toggle_out_of_range_transpose();
+    void toggle_88_key_mode();
+    void toggle_velocity_keypress();
+    void toggle_volume_adjustment();
+    void toggleSustainMode();
+    int  toggle_transpose_adjustment();
+
+    // Others
+    void release_all_keys();
+    void calibrate_volume();
+    void process_tracks(const MidiFile& midi_file);
+
+    // Public static handles for timer and command event
+    static HANDLE command_event;
+    static HANDLE waitable_timer;
+
+    // Data members
+    std::vector<RawNoteEvent> note_events;
+    std::vector<std::string> string_storage;
+    std::vector<std::pair<double, double>> tempo_changes;
+    std::vector<TimeSignature> timeSignatures;
+    std::unique_ptr<std::jthread> playback_thread;
+    std::atomic<bool> eightyEightKeyModeActive{ true };
+
+    std::vector<std::shared_ptr<std::atomic<bool>>> trackMuted;
+    std::vector<std::shared_ptr<std::atomic<bool>>> trackSoloed;
+
+    dp::thread_pool<> processing_pool;
+    std::atomic<bool> midiFileSelected{ false };
+    std::atomic<bool> should_stop{ false };
+    std::atomic<bool> paused{ true };
+    std::atomic<bool> playback_started{ false };
+    std::atomic<size_t> buffer_index{ 0 };
+
+    std::chrono::steady_clock::time_point playback_start_time;
+    std::chrono::steady_clock::time_point last_resume_time;
+    double current_speed{ 1.0 };
+    double paused_time = 0.0;
+    std::chrono::nanoseconds total_adjusted_time{ 0 };
+
+    static const std::array<WORD, 256> SCAN_TABLE_AUTO;
+
+    MidiFile midi_file;
+
+    // Velocity related
+    void setVelocityCurveIndex(size_t index);
+    std::string getVelocityCurveName(midi::VelocityCurveType curveType);
+    std::string getVelocityKey(int targetVelocity);
+
+    // Sustain
+    SustainMode currentSustainMode{ SustainMode::IG };
+    std::atomic<bool> enable_volume_adjustment{ false };
+    std::atomic<bool> enable_velocity_keypress{ false };
+
+    // Key mappings
+    std::map<std::string, std::string> limited_key_mappings;
+    std::map<std::string, std::string> full_key_mappings;
+    std::unordered_map<std::string, std::atomic<bool>> pressed_keys;
+    std::string lastPressedKey;
+
+    bool isSustainPressed{ false };
+    WORD sustain_key_code{ 0 };
+
+    bool ENABLE_OUT_OF_RANGE_TRANSPOSE{ false };
+
+    std::array<int, 128> volume_lookup;
+    WORD volume_up_key_code{ 0 };
+    WORD volume_down_key_code{ 0 };
+    std::atomic<int> current_volume{ 0 };
+    std::atomic<int> max_volume{ 0 };
+    std::vector<bool> drum_flags;
+
+    // Utility
+    bool isTrackEnabled(int trackIndex) const;
+    WORD vkToScanCode(int vk);
+    inline std::chrono::nanoseconds get_adjusted_time() const noexcept {
+        if (paused.load(std::memory_order_relaxed))
+            return total_adjusted_time;
+        auto now = std::chrono::steady_clock::now();
+        return total_adjusted_time + std::chrono::duration_cast<std::chrono::nanoseconds>((now - last_resume_time) * current_speed);
+    }
+
+private:
+    // Private members and methods
+    std::mutex buffer_mutex;
+    PlaybackControl playback_control;
+    UINT m_timerResolutionSet{ 0 };
+
+    // Core playback functions
+    void play_notes();
+    void prepare_event_queue();
+    void execute_note_event(const NoteEvent& event) noexcept;
+    void handle_sustain_event(const NoteEvent& event);
+    size_t find_next_event_index(const std::chrono::nanoseconds& target_time);
+    void reset_volume();
+    void initializeKeyCache();
+    void KeyPress(std::string_view key, bool press);
+    int stringToVK(std::string_view keyName);
+    void sendVirtualKey(WORD vk, bool is_press);
+    void pressKey(WORD vk);
+    void releaseKey(WORD vk);
+
+    void press_key(std::string_view note) noexcept;
+    void release_key(std::string_view note) noexcept;
+
+    std::string transpose_note(std::string_view note);
+    int note_name_to_midi(std::string_view note_name);
+    std::string get_note_name(int midi_note);
+
+    void handle_note_off(std::chrono::nanoseconds ctime,
+        int ch,
+        int note,
+        int vel,
+        int trackIndex,
+        std::unordered_map<int, std::unordered_map<int, std::vector<std::chrono::nanoseconds>>>& active_notes);
+
+    void handle_note_on(std::chrono::nanoseconds ctime,
+        int ch,
+        int note,
+        int vel,
+        int trackIndex,
+        std::unordered_map<int, std::unordered_map<int, std::vector<std::chrono::nanoseconds>>>& active_notes);
+
+    void add_sustain_event(std::chrono::nanoseconds time, int channel, int sustainValue, int trackIndex);
+    void add_note_event(std::chrono::nanoseconds time, std::string_view note, std::string_view action, int velocity, int trackIndex);
+
+    void adjust_playback_speed(double factor);
+    void arrowsend(WORD scanCode, bool extended);
+    void precompute_volume_adjustments();
+    void AdjustVolumeBasedOnVelocity(int velocity) noexcept;
+
+    TransposeEngine transposeEngine;
+    size_t currentVelocityCurveIndex = 0;
+
+    std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> define_key_mappings();
+};
+
+#endif // PLAYBACK_SYSTEM_HPP

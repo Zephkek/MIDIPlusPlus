@@ -29,6 +29,12 @@ namespace midi {
             throw ConfigException("EXTRA_DELAY_MAX cannot be less than EXTRA_DELAY_MIN");
     }
 
+    void AutoTranspose::validate() const {
+        if (TRANSPOSE_UP_KEY.empty() || TRANSPOSE_DOWN_KEY.empty()) {
+            throw ConfigException("Transpose hotkeys cannot be empty");
+        }
+    }
+
     void MIDISettings::validate() const {
         //abcdefg
     }
@@ -98,6 +104,7 @@ namespace midi {
             playback.validate();
             volume.validate();
             legit_mode.validate();
+            auto_transpose.validate();
             hotkeys.validate();
             validateKeyMappings();
         }
@@ -184,6 +191,20 @@ namespace midi {
         l.validate();
     }
 
+    void to_json(json& j, const AutoTranspose& at) {
+        j = json{
+            {"ENABLED", at.ENABLED},
+            {"TRANSPOSE_UP_KEY", at.TRANSPOSE_UP_KEY},
+            {"TRANSPOSE_DOWN_KEY", at.TRANSPOSE_DOWN_KEY}
+        };
+    }
+
+    void from_json(const json& j, AutoTranspose& at) {
+        j.at("ENABLED").get_to(at.ENABLED);
+        j.at("TRANSPOSE_UP_KEY").get_to(at.TRANSPOSE_UP_KEY);
+        j.at("TRANSPOSE_DOWN_KEY").get_to(at.TRANSPOSE_DOWN_KEY);
+    }
+
     void to_json(json& j, const MIDISettings& m) {
         j = json{ {"FILTER_DRUMS", m.FILTER_DRUMS} };
     }
@@ -192,11 +213,11 @@ namespace midi {
         j.at("FILTER_DRUMS").get_to(m.FILTER_DRUMS);
         m.validate();
     }
-     void to_json(nlohmann::json& j, const UISettings& ui) {
+    void to_json(nlohmann::json& j, const UISettings& ui) {
         j = nlohmann::json{ {"alwaysOnTop", ui.alwaysOnTop} };
     }
 
-     void from_json(const nlohmann::json& j, UISettings& ui) {
+    void from_json(const nlohmann::json& j, UISettings& ui) {
         j.at("alwaysOnTop").get_to(ui.alwaysOnTop);
     }
 
@@ -249,12 +270,13 @@ namespace midi {
             {"VOLUME_SETTINGS", c.volume},
             {"KEY_MAPPINGS", c.key_mappings},
             {"LEGIT_MODE_SETTINGS", c.legit_mode},
+            {"AUTO_TRANSPOSE", c.auto_transpose},
             {"HOTKEY_SETTINGS", c.hotkeys},
             {"MIDI_SETTINGS", json{{"FILTER_DRUMS", c.midi.FILTER_DRUMS}}},
             {"STACKED_NOTE_HANDLING_MODE", Config::noteHandlingModeToString(c.playback.noteHandlingMode)},
             {"CUSTOM_VELOCITY_CURVES", json::array()},
             {"PLAYLIST_FILES", c.playlistFiles},
-            {"UI_SETTINGS", c.ui}    
+            {"UI_SETTINGS", c.ui}
         };
 
         for (const auto& curve : c.playback.customVelocityCurves) {
@@ -269,6 +291,7 @@ namespace midi {
         j.at("VOLUME_SETTINGS").get_to(c.volume);
         j.at("KEY_MAPPINGS").get_to(c.key_mappings);
         j.at("LEGIT_MODE_SETTINGS").get_to(c.legit_mode);
+        j.at("AUTO_TRANSPOSE").get_to(c.auto_transpose);
         j.at("HOTKEY_SETTINGS").get_to(c.hotkeys);
         j.at("MIDI_SETTINGS").at("FILTER_DRUMS").get_to(c.midi.FILTER_DRUMS);
 
@@ -304,7 +327,7 @@ namespace midi {
         c.validate();
     }
 
- void Config::setDefaults() {
+    void Config::setDefaults() {
         // Volume settings
         volume = {
             10,     // MIN_VOLUME
@@ -322,6 +345,13 @@ namespace midi {
             0.05,   // EXTRA_DELAY_CHANCE
             0.05,   // EXTRA_DELAY_MIN
             0.2     // EXTRA_DELAY_MAX
+        };
+
+        // AutoTranspose settings
+        auto_transpose = {
+            false,      // ENABLED
+            "VK_UP",    // TRANSPOSE_UP_KEY
+            "VK_DOWN"   // TRANSPOSE_DOWN_KEY
         };
 
         // MIDI settings

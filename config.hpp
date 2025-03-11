@@ -52,6 +52,15 @@ namespace midi {
         void validate() const;
     };
 
+    struct AutoTranspose {
+        bool ENABLED = false;
+        std::string TRANSPOSE_UP_KEY = "VK_UP";   // Default to Up Arrow
+        std::string TRANSPOSE_DOWN_KEY = "VK_DOWN"; // Default to Down Arrow
+
+        void validate() const;
+    };
+
+
     struct UISettings {
         bool alwaysOnTop = false;
     };
@@ -78,7 +87,7 @@ namespace midi {
     struct PlaybackSettings {
         VelocityCurveType velocityCurve = VelocityCurveType::LinearCoarse;
         NoteHandlingMode noteHandlingMode = NoteHandlingMode::LIFO;
-        std::vector<CustomVelocityCurve> customVelocityCurves; 
+        std::vector<CustomVelocityCurve> customVelocityCurves;
         void validate() const;
     };
 
@@ -88,6 +97,7 @@ namespace midi {
         PlaybackSettings playback;
         VolumeSettings volume;
         LegitModeSettings legit_mode;
+        AutoTranspose auto_transpose;
         HotkeySettings hotkeys;
         UISettings ui;
         std::map<std::string, std::map<std::string, std::string>> key_mappings;
@@ -120,6 +130,8 @@ namespace midi {
     void from_json(const nlohmann::json& j, VolumeSettings& v);
     void to_json(nlohmann::json& j, const LegitModeSettings& l);
     void from_json(const nlohmann::json& j, LegitModeSettings& l);
+    void to_json(nlohmann::json& j, const AutoTranspose& l);
+    void from_json(const nlohmann::json& j, AutoTranspose& l);
     void to_json(nlohmann::json& j, const MIDISettings& m);
     void from_json(const nlohmann::json& j, MIDISettings& m);
     void to_json(nlohmann::json& j, const HotkeySettings& h);

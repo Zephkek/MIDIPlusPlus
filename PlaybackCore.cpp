@@ -14,6 +14,7 @@
 // Global definitions
 // ------------------------------
 double g_totalSongSeconds = 0.0;
+int currentTransposition = 0; // did they read the instructions? if not, fuck 'em
 
 typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
 
@@ -507,6 +508,32 @@ void VirtualPianoPlayer::prepare_event_queue() {
 
 void VirtualPianoPlayer::play_notes() {
     prepare_event_queue();
+
+    if (midi::Config::getInstance().auto_transpose.ENABLED) {
+        int suggestedTransposition = toggle_transpose_adjustment();
+        int diff = suggestedTransposition - currentTransposition;
+
+        std::cout << "Suggested Transposition: " << suggestedTransposition << "\n";
+
+        if (diff != 0) {
+            std::cout << "[Transpose] Adjusting by " << diff << " steps.\n";
+
+            std::string upKeyName = midi::Config::getInstance().auto_transpose.TRANSPOSE_UP_KEY;
+            std::string downKeyName = midi::Config::getInstance().auto_transpose.TRANSPOSE_DOWN_KEY;
+
+            int upKey = stringToVK(upKeyName);
+            int downKey = stringToVK(downKeyName);
+
+            WORD scanCode = MapVirtualKey((diff > 0) ? upKey : downKey, MAPVK_VK_TO_VSC);
+            bool isExtended = true;
+
+            for (int i = 0; i < std::abs(diff); ++i) {
+                arrowsend(scanCode, isExtended);  // took me an embarrassingly long time to figure this out
+                Sleep(50);
+            }
+            currentTransposition = suggestedTransposition;
+        }
+    }
 
     // FUCKING THREAD AFFINITY BECAUSE WINDOWS IS A DRUNK TODDLER THAT CAN'T WALK STRAIGHT
     DWORD_PTR affinity_mask = 1;

@@ -1,13 +1,19 @@
 #pragma once
 #include "PlaybackSystem.hpp"
-#include "CallbackHandler.h"
 #include <atomic>
 #include <array>
 #include <vector>
 #include <windows.h>
+#include <winrt/Windows.Devices.Midi.h>
+#include <winrt/Windows.Devices.Enumeration.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Storage.Streams.h>
 
-// Forward declaration for RtMidiIn (assumed to be provided by your RtMidi library (use latest) also supports the built in windows MM library if you ever wanna use that but not recommended doing it directly)
-class RtMidiIn;
+using namespace winrt;
+using namespace Windows::Devices::Midi;
+using namespace Windows::Devices::Enumeration;
+using namespace Windows::Foundation;
+using namespace Windows::Storage::Streams;
 
 class MIDIConnect {
 public:
@@ -17,7 +23,7 @@ public:
     void OpenDevice(int deviceIndex);
     void CloseDevice();
 
-    // Inlined trivial getters.
+    // Inlined trivial getters
     inline bool IsActive() const { return m_isActive.load(std::memory_order_relaxed); }
     inline int GetSelectedDevice() const { return m_selectedDevice; }
 
@@ -25,15 +31,14 @@ public:
     void ReleaseAllNumpadKeys();
 
 private:
-    // The RtMidi callback is marked static so it can be passed as a C-style function pointer.
-    static void RtMidiCallback(double deltaTime, std::vector<unsigned char>* message, void* userData);
+    void ProcessMidiMessage(IMidiMessage const& midiMessage);
 
-    RtMidiIn* m_rtMidiIn;
+    MidiInPort m_midiInPort{ nullptr };
+    event_token m_messageToken;
     int m_selectedDevice;
     std::atomic<bool> m_isActive;
 
-    // Predefined mapping: for each numpad key the “down” and “up” scan codes.
-    // These are used during precomputation.
+    // Predefined mapping: for each numpad key the "down" and "up" scan codes
     static constexpr struct {
         WORD down;
         WORD up;
@@ -43,17 +48,15 @@ private:
         {0x48, 0x48}, {0x49, 0x49}, {0x4A, 0x4A}, {0x4E, 0x4E}
     };
 
-    // Pre-initialized key buffer to avoid per-event allocations.
+    // Pre-initialized key buffer to avoid per-event allocations
     struct KeyBuffer {
         INPUT inputs[10];
         bool initialized;
     } m_keyBuffer;
 
     // Precomputed mapping for note events: for every possible note (data1) and velocity (data2)
-    // mapping[note][velocity] is an array of 10 INPUT events.
     std::array<std::array<std::array<INPUT, 10>, 128>, 128> m_noteMapping;
 
     // Precomputed mapping for sustain events: for every possible sustain value (data2)
-    // mapping[data2] is an array of 10 INPUT events.
     std::array<std::array<INPUT, 10>, 128> m_sustainMapping;
 };

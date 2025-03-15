@@ -57,9 +57,6 @@
     <ClCompile Include="MIDIDeviceUI.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="MIDI_IO.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="InputInjector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -69,12 +66,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="PlaybackSystem.hpp">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="thread_pool.h">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="thread_safe_queue.h">
       <Filter>Header Files\RobloxPlayback</Filter>
     </ClInclude>
     <ClInclude Include="midi_parser.h">
@@ -110,11 +101,17 @@
     <ClInclude Include="MIDIDeviceUI.hpp">
       <Filter>Header Files\Live</Filter>
     </ClInclude>
-    <ClInclude Include="CallbackHandler.h">
-      <Filter>Header Files\Live</Filter>
-    </ClInclude>
     <ClInclude Include="InputHeader.h">
       <Filter>Header Files\Live</Filter>
+    </ClInclude>
+    <ClInclude Include="thread_pool.h">
+      <Filter>Header Files\RobloxPlayback</Filter>
+    </ClInclude>
+    <ClInclude Include="thread_safe_queue.h">
+      <Filter>Header Files\RobloxPlayback</Filter>
+    </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>Header Files\RobloxPlayback</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

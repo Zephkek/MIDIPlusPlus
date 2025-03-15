@@ -74,7 +74,10 @@ namespace midi {
         std::string SUSTAIN_KEY = "VK_SPACE";
         std::string VOLUME_UP_KEY = "VK_RIGHT";
         std::string VOLUME_DOWN_KEY = "VK_LEFT";
-
+        std::string PLAY_PAUSE_KEY = "VK_F1";      // Added default for play/pause
+        std::string REWIND_KEY = "VK_F2";          // Added default for rewind
+        std::string SKIP_KEY = "VK_F3";            // Added default for skip
+        std::string EMERGENCY_EXIT_KEY = "VK_F4"; // Added default for emergency exit
         void validate() const;
     };
 

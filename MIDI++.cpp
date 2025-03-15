@@ -260,7 +260,14 @@ struct MidiItem {
 
 static std::vector<MidiItem> g_midiItems;
 static std::filesystem::path g_currentMidiDir = L"midi";
-
+// bunch of kids
+std::string getReadableKey(const std::string& key) {
+    const std::string prefix = "VK_";
+    if (key.compare(0, prefix.size(), prefix) == 0) {
+        return key.substr(prefix.size());
+    }
+    return key;
+}
 static void ScanMidiFolder() {
     g_midiItems.clear();
     std::filesystem::path currentDir = g_currentMidiDir;
@@ -877,13 +884,19 @@ static LRESULT CALLBACK MidiListSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
         return DefSubclassProc(hwnd, msg, wParam, lParam);
     }
 }
-
-// -----------------------------------------------------------------------------
-// Window Procedure (has a big problem, eats too much cpu and causes playback to die if u move window while playing)
-// -----------------------------------------------------------------------------
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-
+        // temporary fix: this shit
+    case WM_NCLBUTTONDOWN:
+    {
+        if (g_player && !g_player->paused.load(std::memory_order_relaxed) &&
+            g_player->midiFileSelected.load(std::memory_order_acquire)) {
+            if (wParam == HTCAPTION) {
+                return 0; 
+            }
+        }
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
     case WM_CREATE:
     {
         INITCOMMONCONTROLSEX icex = {};
@@ -891,7 +904,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         icex.dwICC = ICC_BAR_CLASSES;
         InitCommonControlsEx(&icex);
 
-        // Create MIDI Files group box and its controls
+        // MIDI Files Group
         CreateWindowW(L"button", L"MIDI Files",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             Layout::FILES_X, Layout::FILES_Y, Layout::FILES_W, Layout::FILES_H,
@@ -916,7 +929,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             hWnd, reinterpret_cast<HMENU>(ID_LB_MIDI), g_hInst, nullptr);
         SetWindowSubclass(g_lbMidi, MidiListSubclassProc, 0, 0);
 
-        // Create Playback (Basic) group and buttons
+        // Playback (Basic) Group
         CreateWindowW(L"button", L"Playback (Basic)",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             Layout::PBASIC_X, Layout::PBASIC_Y, Layout::PBASIC_W, Layout::PBASIC_H,
@@ -1050,7 +1063,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             advx - 125, advy + 41, 65, 20,
             hWnd, reinterpret_cast<HMENU>(ID_STATIC_SUSTAIN_LABEL), g_hInst, nullptr);
 
-        // Config group
+        // Config Group
         CreateWindowW(L"button", L"Config",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             Layout::CFG_X, Layout::CFG_Y, Layout::CFG_W, Layout::CFG_H,
@@ -1098,7 +1111,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             Layout::CFG_X + 495 + 45, Layout::CFG_Y + 25, 40, 20,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_NEXT_SONG), g_hInst, nullptr);
 
-        // Details group
+        // Details Group
         CreateWindowW(L"button", L"Details",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             Layout::DET_X, Layout::DET_Y, Layout::DET_W, Layout::DET_H,
@@ -1108,9 +1121,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             Layout::DET_X + 10, Layout::DET_Y + 20, Layout::DET_W - 20, Layout::DET_H - 30,
             hWnd, reinterpret_cast<HMENU>(ID_EDIT_DETAILS), g_hInst, nullptr);
 
-        // Tracks group
+        // Tracks Group
         g_trackControl.Create(hWnd, Layout::TRK_X, Layout::TRK_Y, Layout::TRK_W, Layout::TRK_H - 2);
-        // Log group
+
+        // Log Group
         CreateWindowW(L"button", L"Log",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             Layout::LOG_X, Layout::LOG_Y, Layout::LOG_W, Layout::LOG_H,
@@ -1135,19 +1149,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             Layout::LOG_X + Layout::LOG_W - 80, Layout::LOG_Y + 115, 70, 25,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH_VCURVE), g_hInst, nullptr);
+
+        // Initialize Toggle States
         std::vector<int> toggles = { ID_BTN_88KEY, ID_BTN_VOLADJ, ID_BTN_VELOCITY, ID_BTN_SUSTAIN, ID_BTN_TRANSPOSEOUT, ID_BTN_MIDI2QWERTY };
         for (int t : toggles)
             g_toggleStates[t] = false;
         if (g_player && g_player->eightyEightKeyModeActive)
             g_toggleStates[ID_BTN_88KEY] = true;
 
+        // Initial Setup
         ScanMidiFolder();
         SortMidiItems();
         PopulateMidiList();
         SetTimer(hWnd, IDT_TIMELEFT_TIMER, 200, nullptr);
         g_guiReady.store(true);
         PostMessage(hWnd, WM_UPDATE_LOG, 0, 0);
-
         UpdateWindowFocusability();
 
         return 0;
@@ -1254,8 +1270,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ScanMidiFolder();
                 SortMidiItems();
                 PopulateMidiList();
-                std::wcout << L"[Refresh] Scanned current MIDI folder: "
-                    << g_currentMidiDir.wstring() << L"\n";
+                std::wcout << L"[Refresh] Scanned current MIDI folder: " << g_currentMidiDir.wstring() << L"\n";
             }
             break;
 
@@ -1267,8 +1282,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 midi::Config::getInstance().ui.alwaysOnTop = top;
                 try {
                     midi::Config::getInstance().saveToFile("config.json");
-                    std::cout << "[Config] Saved Always on Top state: "
-                        << (top ? "ENABLED" : "DISABLED") << "\n";
+                    std::cout << "[Config] Saved Always on Top state: " << (top ? "ENABLED" : "DISABLED") << "\n";
                 }
                 catch (const std::exception& ex) {
                     std::cerr << "[Config] Failed to save config: " << ex.what() << "\n";
@@ -1338,24 +1352,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (!g_player)
                     break;
                 try {
-                    // Stop current playback.
+                    std::cout << "[Load] Initiating load process...\n";
                     g_player->should_stop.store(true, std::memory_order_release);
                     SetEvent(g_player->command_event);
-                    g_player->paused.store(true, std::memory_order_release);
-
-                    // Join the playback thread if running.
-                    if (g_player->playback_thread && g_player->playback_thread->joinable()) {
-                        auto future = std::async(std::launch::async, [=] {
-                            g_player->playback_thread->join();
-                            });
-                        if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
-                            std::cerr << "[LOAD] Warning: Playback thread did not join in time. Detaching.\n";
-                            g_player->playback_thread->detach();
-                        }
+                    {
+                        std::lock_guard<std::mutex> lock(g_player->playback_cv_mutex);
+                        g_player->playback_cv.notify_all();
                     }
+                    if (g_player->playback_thread && g_player->playback_thread->joinable()) {
+                        std::cout << "[Load] Joining playback thread...\n";
+                        g_player->playback_thread->join();
+                        std::cout << "[Load] Playback thread joined.\n";
+                    }
+                    g_player->playback_thread.reset();
 
-                    // Clear previous tasks and states.
-                    g_player->processing_pool.clear_tasks();
+                    g_player->paused.store(true, std::memory_order_release);
                     g_player->release_all_keys();
                     g_player->note_events.clear();
                     g_player->tempo_changes.clear();
@@ -1363,7 +1374,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_player->trackMuted.clear();
                     g_player->trackSoloed.clear();
 
-                    // Get the selected MIDI file.
                     std::wstring wpath = GetSelectedMidiFullPath();
                     if (wpath.empty()) {
                         std::cout << "[Load] No MIDI file selected.\n";
@@ -1371,20 +1381,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         break;
                     }
 
-                    // Convert path to UTF-8.
-                    int len = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(),
-                        static_cast<int>(wpath.size()), nullptr, 0, nullptr, nullptr);
+                    int len = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), static_cast<int>(wpath.size()), nullptr, 0, nullptr, nullptr);
                     std::string path(len, '\0');
-                    WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(),
-                        static_cast<int>(wpath.size()), &path[0], len, nullptr, nullptr);
+                    WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), static_cast<int>(wpath.size()), &path[0], len, nullptr, nullptr);
 
-                    // Parse and process MIDI file.
                     MidiParser parser;
                     g_player->midi_file = parser.parse(path);
                     g_player->process_tracks(g_player->midi_file);
                     g_player->midiFileSelected.store(true, std::memory_order_release);
 
-                    // Reset playback state.
                     g_player->should_stop.store(false, std::memory_order_release);
                     g_player->paused.store(true, std::memory_order_release);
                     g_player->playback_started.store(false, std::memory_order_release);
@@ -1392,11 +1397,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_player->total_adjusted_time = -initialBuffer;
                     g_player->current_speed = 1.0;
                     g_player->buffer_index.store(0, std::memory_order_release);
-                    auto now = std::chrono::steady_clock::now();
-                    g_player->playback_start_time = now;
-                    g_player->last_resume_time = now;
+                    unsigned long long now_tsc = __rdtsc();
+                    g_player->playback_start_time = now_tsc;
+                    g_player->last_resume_tsc = now_tsc;
 
-                    // Initialize track mute/solo vectors.
                     size_t track_count = g_player->midi_file.tracks.size();
                     g_player->trackMuted.resize(track_count);
                     g_player->trackSoloed.resize(track_count);
@@ -1405,11 +1409,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         g_player->trackSoloed[i] = std::make_shared<std::atomic<bool>>(false);
                     }
 
-                    UpdateMidiDetails();
-                    UpdateTrackInfo();
-                    std::cout << "[Load] Loaded: " << path << "\n";
-
-                    // Compute total song duration.
                     g_totalSongSeconds = 0.0;
                     if (!g_player->note_events.empty()) {
                         auto last_event = std::max_element(
@@ -1422,22 +1421,27 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         }
                     }
 
-                    // Update time display.
                     wchar_t timeStr[32];
                     int totalMins = static_cast<int>(g_totalSongSeconds) / 60;
                     int totalSecs = static_cast<int>(g_totalSongSeconds) % 60;
                     swprintf_s(timeStr, L"0:00 / %d:%02d", totalMins, totalSecs);
                     SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), timeStr);
 
-                    // Calibrate volume if AutoVol is enabled.
+                    UpdateMidiDetails();
+                    UpdateTrackInfo();
+
                     if (g_toggleStates[ID_BTN_VOLADJ]) {
                         FocusRobloxWindow();
                         g_player->calibrate_volume();
                     }
+
+                    std::cout << "[Load] Loaded: " << path << "\n";
                 }
                 catch (const std::exception& e) {
                     std::cout << "[Load] Error: " << e.what() << "\n";
                     SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), L"0:00 / 0:00");
+                    UpdateMidiDetails();
+                    UpdateTrackInfo();
                 }
             }
             break;
@@ -1835,7 +1839,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
-
     case WM_TIMER:
     {
         if (wParam == IDT_TIMELEFT_TIMER) {
@@ -1864,7 +1867,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (!g_player->paused.load(std::memory_order_relaxed))
                 currentSeconds = std::chrono::duration<double>(g_player->get_adjusted_time()).count();
             else
-                currentSeconds = std::chrono::duration<double>(g_player->total_adjusted_time).count();
+                currentSeconds = std::chrono::duration<double>(g_player->total_adjusted_time).count(); // Use last stored time when paused
             currentSeconds = std::min(currentSeconds, g_totalSongSeconds);
             int currentMins = static_cast<int>(currentSeconds) / 60;
             int currentSecs = static_cast<int>(currentSeconds) % 60;
@@ -1917,7 +1920,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
     }
-
     case WM_DESTROY:
         if (g_player) {
             g_player->should_stop.store(true, std::memory_order_release);
@@ -1968,7 +1970,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     UniqueHandle singleInstanceMutex(CreateMutexW(nullptr, TRUE, L"Global\\MIDI++_On_Top"));
     g_hSingleInstanceMutex = singleInstanceMutex;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existingWindow = FindWindowW(L"MIDI++", L"MIDI++ v1.0.4.R4");
+        HWND existingWindow = FindWindowW(L"MIDI++", L"MIDI++ v1.0.4.R5");
         if (existingWindow) {
             if (IsIconic(existingWindow))
                 ShowWindow(existingWindow, SW_RESTORE);
@@ -1988,8 +1990,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     g_player = &player;
 
     RedirectCout();
-    std::cout << " ===== MIDI++ v1.0.4.R4 | Developed by Zeph, Tested by Gene =====\n";
+    auto& cfg = midi::Config::getInstance();
 
+    std::cout << " ===== MIDI++ v1.0.4.R5 | Developed by Zeph, Tested by Gene =====\n";
+    std::cout << "Hotkeys:\n";
+    std::cout << "  Play/Pause:     " << getReadableKey(cfg.hotkeys.PLAY_PAUSE_KEY) << "\n";
+    std::cout << "  Rewind:         " << getReadableKey(cfg.hotkeys.REWIND_KEY) << "\n";
+    std::cout << "  Skip:           " << getReadableKey(cfg.hotkeys.SKIP_KEY) << "\n";
+    std::cout << "  Play Stop:      " << getReadableKey(cfg.hotkeys.EMERGENCY_EXIT_KEY) << "\n";
     g_hInst = hInstance;
     HICON hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
     HICON hIconSmall = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON_SMALL));
@@ -2010,7 +2018,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     RegisterClassExW(&wc);
     g_hMainWnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_APPWINDOW | WS_EX_LAYERED,
         wc.lpszClassName,
-        L"MIDI++ v1.0.4.R4",
+        L"MIDI++ v1.0.4.R5",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT,
         Layout::WIN_W, Layout::WIN_H,
@@ -2025,7 +2033,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     }
     ShowWindow(g_hMainWnd, SW_SHOW);
     UpdateWindow(g_hMainWnd);
-
     MSG msg;
 
     while (GetMessage(&msg, nullptr, 0, 0) > 0) {

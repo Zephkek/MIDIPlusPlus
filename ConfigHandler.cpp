@@ -41,13 +41,18 @@ namespace midi {
 
     void HotkeySettings::validate() const {
         auto validateKey = [](const std::string& key) {
-            if (key.empty()) throw ConfigException("Hotkey cannot be empty");
-            if (key.find("VK_") != 0) throw ConfigException("Hotkey must start with 'VK_'");
+            if (key.empty())
+                throw ConfigException("Hotkey cannot be empty");
+            if (key.find("VK_") != 0)
+                throw ConfigException("Hotkey must start with 'VK_'");
             };
-
         validateKey(SUSTAIN_KEY);
         validateKey(VOLUME_UP_KEY);
         validateKey(VOLUME_DOWN_KEY);
+        validateKey(PLAY_PAUSE_KEY);
+        validateKey(REWIND_KEY);
+        validateKey(SKIP_KEY);
+        validateKey(EMERGENCY_EXIT_KEY);
     }
 
     void PlaybackSettings::validate() const {
@@ -221,18 +226,26 @@ namespace midi {
         j.at("alwaysOnTop").get_to(ui.alwaysOnTop);
     }
 
-    void to_json(json& j, const HotkeySettings& h) {
-        j = json{
+    void to_json(nlohmann::json& j, const HotkeySettings& h) {
+        j = nlohmann::json{
             {"SUSTAIN_KEY", h.SUSTAIN_KEY},
             {"VOLUME_UP_KEY", h.VOLUME_UP_KEY},
-            {"VOLUME_DOWN_KEY", h.VOLUME_DOWN_KEY}
+            {"VOLUME_DOWN_KEY", h.VOLUME_DOWN_KEY},
+            {"PLAY_PAUSE_KEY", h.PLAY_PAUSE_KEY},
+            {"REWIND_KEY", h.REWIND_KEY},
+            {"SKIP_KEY", h.SKIP_KEY},
+            {"EMERGENCY_EXIT_KEY", h.EMERGENCY_EXIT_KEY}
         };
     }
 
-    void from_json(const json& j, HotkeySettings& h) {
+    void from_json(const nlohmann::json& j, HotkeySettings& h) {
         j.at("SUSTAIN_KEY").get_to(h.SUSTAIN_KEY);
         j.at("VOLUME_UP_KEY").get_to(h.VOLUME_UP_KEY);
         j.at("VOLUME_DOWN_KEY").get_to(h.VOLUME_DOWN_KEY);
+        j.at("PLAY_PAUSE_KEY").get_to(h.PLAY_PAUSE_KEY);
+        j.at("REWIND_KEY").get_to(h.REWIND_KEY);
+        j.at("SKIP_KEY").get_to(h.SKIP_KEY);
+        j.at("EMERGENCY_EXIT_KEY").get_to(h.EMERGENCY_EXIT_KEY);
         h.validate();
     }
     void to_json(json& j, const PlaybackSettings& p) {
@@ -357,14 +370,16 @@ namespace midi {
         // MIDI settings
         midi = { true }; // FILTER_DRUMS
 
-        // Hotkey settings
+        // Hotkey settings (updated with additional keys)
         hotkeys = {
-            "VK_SPACE",   // SUSTAIN_KEY
-            "VK_RIGHT",   // VOLUME_UP_KEY
-            "VK_LEFT"     // VOLUME_DOWN_KEY
+            "VK_SPACE",    // SUSTAIN_KEY
+            "VK_RIGHT",    // VOLUME_UP_KEY
+            "VK_LEFT",     // VOLUME_DOWN_KEY
+            "VK_F1",        // PLAY_PAUSE_KEY
+            "VK_F2",        // REWIND_KEY
+            "VK_F3",        // SKIP_KEY
+            "VK_F4"    // EMERGENCY_EXIT_KEY
         };
-
-
 
         // Setup default LIMITED key mappings
         key_mappings["LIMITED"] = {

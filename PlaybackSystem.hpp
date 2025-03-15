@@ -184,7 +184,7 @@ public:
     void toggle_play_pause();
     void skip(std::chrono::seconds duration);
     void rewind(std::chrono::seconds duration);
-    void restart_song();
+    void restart_song(bool silent = false);
     void speed_up();
     void slow_down();
     void toggle_out_of_range_transpose();
@@ -192,7 +192,7 @@ public:
     void toggle_velocity_keypress();
     void toggle_volume_adjustment();
     void toggleSustainMode();
-    int  toggle_transpose_adjustment();
+    int  toggle_transpose_adjustment(bool silent = false);
 
     // Others
     void release_all_keys();
@@ -276,7 +276,7 @@ private:
     UINT m_timerResolutionSet{ 0 };
 
     // Core playback functions
-    void play_notes();
+    void play_notes(bool silent = false);
     void prepare_event_queue();
     void execute_note_event(const NoteEvent& event) noexcept;
     void handle_sustain_event(const NoteEvent& event);

@@ -506,14 +506,16 @@ void VirtualPianoPlayer::prepare_event_queue() {
 
 // TODO: you're an absolute retard, you should fucking rewrite this 
 
-void VirtualPianoPlayer::play_notes() {
+void VirtualPianoPlayer::play_notes(bool silent) {
     prepare_event_queue();
 
     if (midi::Config::getInstance().auto_transpose.ENABLED) {
-        int suggestedTransposition = toggle_transpose_adjustment();
+        int suggestedTransposition = toggle_transpose_adjustment(silent);
         int diff = suggestedTransposition - currentTransposition;
 
-        std::cout << "Suggested Transposition: " << suggestedTransposition << "\n";
+        if (!silent) {
+            std::cout << "Suggested Transposition: " << suggestedTransposition << "\n";
+        }
 
         if (diff != 0) {
             std::cout << "[Transpose] Adjusting by " << diff << " steps.\n";
@@ -810,7 +812,7 @@ void VirtualPianoPlayer::toggle_play_pause() {
             last_resume_time = playback_start_time;
             buffer_index.store(0, std::memory_order_release);
             if (!playback_thread || !playback_thread->joinable()) {
-                playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this);
+                playback_thread = std::make_unique<std::jthread>(std::bind(&VirtualPianoPlayer::play_notes, this, false));
             }
         }
         else {
@@ -832,8 +834,19 @@ void VirtualPianoPlayer::skip(std::chrono::seconds duration) {
         std::cout << "[SKIP] Not started; adjusting start time with buffer.\n";
         return;
     }
+
     double cur = get_adjusted_time().count() / 1e9;
     double tot = note_buffer.empty() ? 0.0 : static_cast<double>(note_buffer.back()->time.count()) / 1e9;
+
+   // make sure skip does not exceed song duration
+    if (cur + duration.count() > tot) {
+        duration = std::chrono::seconds(static_cast<int>(tot - cur));
+        if (duration.count() <= 0) {
+            std::cout << "[SKIP] Cannot skip, remaining duration too low.\n";
+            return;
+        }
+    }
+
     std::cout << "[SKIP] forward " << duration.count() << "s from " << cur << " / " << tot << "\n";
     playback_control.requestSkip(duration);
     SetEvent(command_event);
@@ -848,8 +861,27 @@ void VirtualPianoPlayer::rewind(std::chrono::seconds duration) {
         std::cout << "[REWIND] Not started; adjusting start time with buffer.\n";
         return;
     }
+
     double cur = get_adjusted_time().count() / 1e9;
     double tot = note_buffer.empty() ? 0.0 : static_cast<double>(note_buffer.back()->time.count()) / 1e9;
+    
+    // this will do the trick -- idgaf anymore   
+    if (cur >= tot) {
+        restart_song(true); // don't tell them i just restarted the song, lol
+        playback_control.requestSkip(std::chrono::seconds(static_cast<int>(tot - 10))); 
+        SetEvent(command_event);
+        cur = tot - 10;
+        std::cout << "[REWIND] back 10s from " << cur << " / " << tot << "\n";
+        return;
+    }
+    
+    // the song just started, but ok.
+    if (cur - duration.count() <= 0) {
+        std::cout << "[REWIND] Rewinding to the beginning.\n";
+        restart_song(true);
+        return;
+    }
+
     std::cout << "[REWIND] back " << duration.count() << "s from " << cur << " / " << tot << "\n";
     playback_control.requestRewind(duration);
     SetEvent(command_event);
@@ -921,7 +953,7 @@ void VirtualPianoPlayer::reset_volume() {
     current_volume.store(midi::Config::getInstance().volume.INITIAL_VOLUME, std::memory_order_relaxed);
 }
 
-void VirtualPianoPlayer::restart_song() {
+void VirtualPianoPlayer::restart_song(bool silent) {
     try {
         if (isSustainPressed) {
             releaseKey(sustain_key_code);
@@ -948,8 +980,10 @@ void VirtualPianoPlayer::restart_song() {
         playback_start_time = now;
         last_resume_time = now;
         should_stop.store(false, std::memory_order_release);
-        playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this);
-        std::cout << "[RESTART] Done.\n";
+        playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this, silent);
+        if (!silent) {
+            std::cout << "[RESTART] Done.\n";
+        }
     }
     catch (const std::exception& e) {
         std::cerr << "[RESTART] Error: " << e.what() << "\n";
@@ -1212,7 +1246,7 @@ void VirtualPianoPlayer::toggle_out_of_range_transpose() {
     std::cout << "[61-KEY TRANSPOSE] " << (ENABLE_OUT_OF_RANGE_TRANSPOSE ? "Enabled" : "Disabled") << "\n";
 }
 
-int VirtualPianoPlayer::toggle_transpose_adjustment() {
+int VirtualPianoPlayer::toggle_transpose_adjustment(bool silent) {
     auto [notes, durations] = transposeEngine.extractNotesAndDurations(midi_file);
     if (notes.empty()) {
         std::cout << "[TRANSPOSE] No notes.\n";
@@ -1220,7 +1254,9 @@ int VirtualPianoPlayer::toggle_transpose_adjustment() {
     }
     std::string key = transposeEngine.estimateKey(notes, durations);
     std::string genre = transposeEngine.detectGenre(midi_file);
-    std::cout << "Detected key: " << key << "\nDetected genre: " << genre << "\n";
+    if (!silent) {
+        std::cout << "Detected key: " << key << "\nDetected genre: " << genre << "\n";
+    }
     int best = transposeEngine.findBestTranspose(notes, durations, key, genre);
     return best;
 }

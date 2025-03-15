@@ -871,7 +871,7 @@ void VirtualPianoPlayer::rewind(std::chrono::seconds duration) {
         playback_control.requestSkip(std::chrono::seconds(static_cast<int>(tot - 10))); 
         SetEvent(command_event);
         cur = tot - 10;
-        std::cout << "[REWIND] back 10s from " << tot << " / " << tot << "\n";
+        std::cout << "[REWIND] back 10s from " << cur << " / " << tot << "\n";
         return;
     }
     

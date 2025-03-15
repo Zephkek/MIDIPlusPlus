@@ -832,8 +832,19 @@ void VirtualPianoPlayer::skip(std::chrono::seconds duration) {
         std::cout << "[SKIP] Not started; adjusting start time with buffer.\n";
         return;
     }
+
     double cur = get_adjusted_time().count() / 1e9;
     double tot = note_buffer.empty() ? 0.0 : static_cast<double>(note_buffer.back()->time.count()) / 1e9;
+
+   // make sure skip does not exceed song duration
+    if (cur + duration.count() > tot) {
+        duration = std::chrono::seconds(static_cast<int>(tot - cur));
+        if (duration.count() <= 0) {
+            std::cout << "[SKIP] Cannot skip, remaining duration too low.\n";
+            return;
+        }
+    }
+
     std::cout << "[SKIP] forward " << duration.count() << "s from " << cur << " / " << tot << "\n";
     playback_control.requestSkip(duration);
     SetEvent(command_event);

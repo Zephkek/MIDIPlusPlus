@@ -843,7 +843,7 @@ void VirtualPianoPlayer::toggle_volume_adjustment() {
     if (newVal) {
         max_volume = midi::Config::getInstance().volume.MAX_VOLUME;
         precompute_volume_adjustments();
-        calibrate_volume();
+        _volume();
         std::cout << "[AUTOVOL] On. Initial=" << midi::Config::getInstance().volume.INITIAL_VOLUME
             << "% Step=" << midi::Config::getInstance().volume.VOLUME_STEP
             << "% Max=" << midi::Config::getInstance().volume.MAX_VOLUME << "%\n";
@@ -873,30 +873,45 @@ void VirtualPianoPlayer::precompute_volume_adjustments() {
         volume_lookup[v] = tv;
     }
 }
-
 void VirtualPianoPlayer::calibrate_volume()
 {
+    // thanks vp2 for making this more complicated than it has to be.
+
     auto& volConfig = midi::Config::getInstance().volume;
 
-    int totalSteps = (volConfig.MAX_VOLUME - volConfig.MIN_VOLUME)
-        / volConfig.VOLUME_STEP;
-    int downPresses = totalSteps + 2;
-    for (int i = 0; i < downPresses; ++i) {
+    std::cout << "[AUTOVOL] Calibrating. Target=" << volConfig.INITIAL_VOLUME
+        << "% Step=" << volConfig.VOLUME_STEP
+        << "% Min=" << volConfig.MIN_VOLUME
+        << "% Max=" << volConfig.MAX_VOLUME << "%" << std::endl;
+    int resetPresses = 50;  // Absolute large number regardless of config because idfk 
+
+    std::cout << "[AUTOVOL] Resetting to minimum: " << resetPresses << " down presses" << std::endl;
+    for (int i = 0; i < resetPresses; ++i) {
         arrowsend(volume_down_key_code, true);
+        for (volatile int j = 0; j < 8000; ++j) {}
     }
-    int stepsToInit = (volConfig.INITIAL_VOLUME - volConfig.MIN_VOLUME)
-        / volConfig.VOLUME_STEP;
+    for (volatile int j = 0; j < 50000; ++j) {}
+    double range = volConfig.INITIAL_VOLUME - volConfig.MIN_VOLUME;
+    double calibrationFactor = 1.0;
+    if (volConfig.INITIAL_VOLUME > 150) {
+        calibrationFactor = 1.1; 
+    }
+    int stepsNeeded = ceil((range / volConfig.VOLUME_STEP) * calibrationFactor);
 
-    stepsToInit = std::max(stepsToInit, 0);
-
-    for (int i = 0; i < stepsToInit; ++i) {
+    std::cout << "[AUTOVOL] Increasing to target: " << stepsNeeded
+        << " up presses (factor: " << calibrationFactor << ")" << std::endl;
+    for (int i = 0; i < stepsNeeded; ++i) {
         arrowsend(volume_up_key_code, true);
+        int baseDelay = 8000;
+        int extraDelay = (i > 10) ? (i - 10) * 300 : 0;  
+        int totalDelay = baseDelay + extraDelay;
+
+        for (volatile int j = 0; j < totalDelay; ++j) {}
     }
-
-    // Update our tracked volume
     current_volume.store(volConfig.INITIAL_VOLUME, std::memory_order_relaxed);
+    std::cout << "[AUTOVOL] Calibration complete. Target: "
+        << volConfig.INITIAL_VOLUME << "%" << std::endl;
 }
-
 void VirtualPianoPlayer::AdjustVolumeBasedOnVelocity(int velocity) noexcept {
     if (velocity < 0 || velocity >= static_cast<int>(volume_lookup.size()))
         return;

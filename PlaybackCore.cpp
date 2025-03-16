@@ -1,4 +1,4 @@
-﻿#include "PlaybackSystem.hpp"
+#include "PlaybackSystem.hpp"
 #include "InputHeader.h"
 #include "timer.h" 
 #include <cmath>
@@ -595,13 +595,19 @@ void VirtualPianoPlayer::toggleSustainMode() {
         currentSustainMode = SustainMode::SPACE_DOWN;
         std::cout << "[SUSTAIN] DOWN cutoff=" << g_sustainCutoff << "\n";
         break;
+
     case SustainMode::SPACE_DOWN:
         currentSustainMode = SustainMode::SPACE_UP;
-        std::cout << "[SUSTAIN] UP cutoff=" << g_sustainCutoff << "\n";
+        std::cout << "[SUSTAIN] UP (inverted) cutoff=" << g_sustainCutoff << "\n";
         break;
+
     case SustainMode::SPACE_UP:
         currentSustainMode = SustainMode::IG;
         std::cout << "[SUSTAIN] IGNORE\n";
+        if (isSustainPressed) {
+            releaseKey(sustain_key_code);
+            isSustainPressed = false;
+        }
         break;
     }
 }
@@ -843,7 +849,7 @@ void VirtualPianoPlayer::toggle_volume_adjustment() {
     if (newVal) {
         max_volume = midi::Config::getInstance().volume.MAX_VOLUME;
         precompute_volume_adjustments();
-        _volume();
+        calibrate_volume();
         std::cout << "[AUTOVOL] On. Initial=" << midi::Config::getInstance().volume.INITIAL_VOLUME
             << "% Step=" << midi::Config::getInstance().volume.VOLUME_STEP
             << "% Max=" << midi::Config::getInstance().volume.MAX_VOLUME << "%\n";
@@ -874,7 +880,6 @@ void VirtualPianoPlayer::precompute_volume_adjustments() {
     }
 }
 void VirtualPianoPlayer::calibrate_volume() {
-    // simplified the cavemen logic, vp2 broke the old implementation by adding debounce on volume. pain
     auto& vc = midi::Config::getInstance().volume;
 
     for (int i = 0; i < 50; ++i) { arrowsend(volume_down_key_code, true); for (volatile int j = 0; j < 8000; ++j) {} }
@@ -1221,20 +1226,27 @@ void VirtualPianoPlayer::slow_down() {
 void VirtualPianoPlayer::adjust_playback_speed(double factor) {
     unsigned long long now_tsc = __rdtsc();
     if (!playback_started.load(std::memory_order_relaxed)) {
-        playback_start_time = now_tsc; 
+        // If playback hasn’t started, initialize TSC values but don’t adjust time yet
+        playback_start_time = now_tsc;
         last_resume_tsc = now_tsc;
     }
     else {
+        // Calculate elapsed time at current speed before changing it
         unsigned long long tick_diff = now_tsc - last_resume_tsc;
         double elapsed_seconds = static_cast<double>(tick_diff) * inv_cpu_freq;
-        auto elapsed_ns = static_cast<std::chrono::nanoseconds::rep>(elapsed_seconds * 1e9 * current_speed + 0.5);
+        auto elapsed_ns = static_cast<std::chrono::nanoseconds::rep>(
+            elapsed_seconds * 1e9 * current_speed + 0.5);
         total_adjusted_time += std::chrono::nanoseconds(elapsed_ns);
         last_resume_tsc = now_tsc;
     }
+    // Adjust the playback speed
     current_speed *= factor;
     current_speed = std::clamp(current_speed, 0.25, 2.0);
-    if (std::fabs(current_speed - 1.0) < 0.05)
-        current_speed = 1.0;
+    if (std::fabs(current_speed - 1.0) < 0.05) {
+        current_speed = 1.0; // Snap to normal speed if close
+    }
+    // Update time_factor to reflect the new speed
+    time_factor = inv_cpu_freq * 1e9 * current_speed;
     std::cout << "[SPEED] x" << current_speed << "\n";
 }
 void VirtualPianoPlayer::arrowsend(WORD sc, bool extended) {
@@ -1336,32 +1348,62 @@ void VirtualPianoPlayer::execute_note_event(const NoteEvent& event) noexcept {
 }
 
 void VirtualPianoPlayer::handle_sustain_event(const NoteEvent& event) {
-    if (event.action == EventType::Press && !isSustainPressed) {
-        pressKey(sustain_key_code);
-        isSustainPressed = true;
-    }
-    else if (event.action == EventType::Release && isSustainPressed) {
-        releaseKey(sustain_key_code);
-        isSustainPressed = false;
+    switch (currentSustainMode) {
+    case SustainMode::IG:
+         return;
+
+    case SustainMode::SPACE_DOWN:
+        if (event.action == EventType::Press && !isSustainPressed) {
+            if (event.sustainValue >= g_sustainCutoff) {
+                pressKey(sustain_key_code);
+                isSustainPressed = true;
+            }
+        }
+        else if (event.action == EventType::Release && isSustainPressed) {
+            if (event.sustainValue < g_sustainCutoff) {
+                releaseKey(sustain_key_code);
+                isSustainPressed = false;
+            }
+        }
+        break;
+
+    case SustainMode::SPACE_UP:
+        if (event.action == EventType::Release && !isSustainPressed) {
+            if (event.sustainValue < g_sustainCutoff) {
+                pressKey(sustain_key_code);
+                isSustainPressed = true;
+            }
+        }
+        else if (event.action == EventType::Press && isSustainPressed) {
+            if (event.sustainValue >= g_sustainCutoff) {
+                releaseKey(sustain_key_code);
+                isSustainPressed = false;
+            }
+        }
+        break;
     }
 }
-
 void VirtualPianoPlayer::toggle_play_pause() {
-    release_all_keys(); // roblox moment
-    bool wasPaused = paused.exchange(!paused.load(std::memory_order_acquire), std::memory_order_acq_rel);
+    bool wasPaused = paused.load(std::memory_order_acquire);
+    paused.store(!wasPaused, std::memory_order_release);
     if (!wasPaused) {
+        // Pausing
+        signalPlayback();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Allow some time for playback to stop so it doesn't fail to release sustain 
+        release_all_keys();
         unsigned long long current_tsc = __rdtsc();
         unsigned long long tick_diff = current_tsc - last_resume_tsc;
         double elapsed_seconds = static_cast<double>(tick_diff) * inv_cpu_freq;
         auto elapsed_ns = static_cast<std::chrono::nanoseconds::rep>(elapsed_seconds * 1e9 * current_speed + 0.5);
         total_adjusted_time += std::chrono::nanoseconds(elapsed_ns);
+        std::cout << "[PLAYBACK] Paused\n";
     }
     else {
+        // Resuming
         last_resume_tsc = __rdtsc();
+        signalPlayback();
+        std::cout << "[PLAYBACK] Resumed\n";
     }
-
-    signalPlayback();
-
     if (!playback_thread) {
         playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this);
     }

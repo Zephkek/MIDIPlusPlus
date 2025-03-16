@@ -885,7 +885,7 @@ void VirtualPianoPlayer::calibrate_volume()
         << "% Max=" << volConfig.MAX_VOLUME << "%" << std::endl;
     int resetPresses = 50;  // Absolute large number regardless of config because idfk 
 
-    std::cout << "[AUTOVOL] Resetting to minimum: " << resetPresses << " down presses" << std::endl;
+   // std::cout << "[AUTOVOL] Resetting to minimum: " << resetPresses << " down presses" << std::endl;
     for (int i = 0; i < resetPresses; ++i) {
         arrowsend(volume_down_key_code, true);
         for (volatile int j = 0; j < 8000; ++j) {}
@@ -898,8 +898,8 @@ void VirtualPianoPlayer::calibrate_volume()
     }
     int stepsNeeded = ceil((range / volConfig.VOLUME_STEP) * calibrationFactor);
 
-    std::cout << "[AUTOVOL] Increasing to target: " << stepsNeeded
-        << " up presses (factor: " << calibrationFactor << ")" << std::endl;
+  //  std::cout << "[AUTOVOL] Increasing to target: " << stepsNeeded
+    //    << " up presses (factor: " << calibrationFactor << ")" << std::endl;
     for (int i = 0; i < stepsNeeded; ++i) {
         arrowsend(volume_up_key_code, true);
         int baseDelay = 8000;

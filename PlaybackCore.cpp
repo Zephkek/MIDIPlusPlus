@@ -1,4 +1,4 @@
-﻿#include "PlaybackSystem.hpp"
+#include "PlaybackSystem.hpp"
 #include "InputHeader.h"
 #include "timer.h" 
 #include <cmath>
@@ -1399,20 +1399,29 @@ void VirtualPianoPlayer::toggle_play_pause() {
     }
 }
 void VirtualPianoPlayer::skip(std::chrono::seconds duration) {
+    release_all_keys();
+    auto skip_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
+
     if (!playback_started.load(std::memory_order_acquire)) {
-        return; // no
+        total_adjusted_time += skip_ns;
+        if (total_adjusted_time < std::chrono::nanoseconds(0)) {
+            total_adjusted_time = std::chrono::nanoseconds(0);
+        }
+        buffer_index.store(find_next_event_index(total_adjusted_time), std::memory_order_release);
+        return;
     }
 
-    release_all_keys();
-    bool song_ended = (buffer_index.load(std::memory_order_acquire) >= note_buffer.size()) &&
-        playback_started.load(std::memory_order_acquire);
+    bool song_ended = (buffer_index.load(std::memory_order_acquire) >= note_buffer.size())
+        && playback_started.load(std::memory_order_acquire);
 
     if (song_ended) {
-        std::cout << "[SKIP] Song ended, restarting with skip of " << duration.count() << " seconds.\n";
-        restart_song(); 
-        total_adjusted_time += std::chrono::duration_cast<std::chrono::nanoseconds>(duration); 
+        restart_song();
+        total_adjusted_time += skip_ns;
+        if (total_adjusted_time < std::chrono::nanoseconds(0)) {
+            total_adjusted_time = std::chrono::nanoseconds(0);
+        }
         buffer_index.store(find_next_event_index(total_adjusted_time), std::memory_order_release);
-        last_resume_tsc = __rdtsc(); 
+        last_resume_tsc = __rdtsc();
     }
     else {
         playback_control.requestSkip(duration);
@@ -1420,25 +1429,25 @@ void VirtualPianoPlayer::skip(std::chrono::seconds duration) {
     }
 }
 
-
 void VirtualPianoPlayer::rewind(std::chrono::seconds duration) {
     release_all_keys();
-    bool song_ended = (buffer_index.load(std::memory_order_acquire) >= note_buffer.size()) && playback_started.load(std::memory_order_acquire);
+    auto rewind_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
+    bool ended = (buffer_index.load(std::memory_order_acquire) >= note_buffer.size())
+        && playback_started.load(std::memory_order_acquire);
 
-    if (song_ended) {
-        std::cout << "[REWIND] Song ended, rewinding from end by " << duration.count() << " seconds.\n";
-        auto song_duration_ns = note_buffer.empty() ? std::chrono::nanoseconds(0) : note_buffer.back()->time;
-        auto rewind_amount = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
-        total_adjusted_time = std::max(std::chrono::nanoseconds(0), song_duration_ns - rewind_amount);
+    if (ended) {
+        should_stop.store(true, std::memory_order_release);
+        signalPlayback();
+        if (playback_thread && playback_thread->joinable()) {
+            playback_thread->join();
+        }
+        auto total_len = note_buffer.empty() ? std::chrono::nanoseconds(0) : note_buffer.back()->time;
+        total_adjusted_time = (rewind_ns > total_len) ? std::chrono::nanoseconds(0) : total_len - rewind_ns;
         buffer_index.store(find_next_event_index(total_adjusted_time), std::memory_order_release);
         paused.store(false, std::memory_order_release);
+        should_stop.store(false, std::memory_order_release);
         last_resume_tsc = __rdtsc();
-        signalPlayback();
-        if (!playback_thread || !playback_thread->joinable()) {
-            std::cout << "[REWIND] Starting new playback thread.\n";
-            should_stop.store(false, std::memory_order_release);
-            playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this);
-        }
+        playback_thread = std::make_unique<std::jthread>(&VirtualPianoPlayer::play_notes, this); // signaling alone isn't enough so we do this
     }
     else {
         playback_control.requestRewind(duration);

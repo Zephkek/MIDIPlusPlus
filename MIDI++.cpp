@@ -1,4 +1,4 @@
-﻿// never writing any UI in C++ ever again
+// never writing any UI in C++ ever again
 
 #include "PlaybackSystem.hpp"
 #include "TrackControl.hpp"
@@ -889,14 +889,19 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // temporary fix: this shit
     case WM_NCLBUTTONDOWN:
     {
-        if (g_player && !g_player->paused.load(std::memory_order_relaxed) &&
-            g_player->midiFileSelected.load(std::memory_order_acquire)) {
-            if (wParam == HTCAPTION) {
-                return 0; 
-            }
+        if (g_player &&
+            g_player->midiFileSelected.load(std::memory_order_acquire) &&
+            !g_player->paused.load(std::memory_order_acquire) &&
+            g_player->playback_started.load(std::memory_order_acquire) &&
+            (g_player->buffer_index.load(std::memory_order_acquire) < g_player->note_buffer.size()) &&
+            wParam == HTCAPTION)
+        {
+            return 0;
         }
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
+
+
     case WM_CREATE:
     {
         INITCOMMONCONTROLSEX icex = {};

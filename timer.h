@@ -10,9 +10,10 @@ enum {
     RDTSC_TIMER_ERR_CPU_FREQ,
 };
 
-static double __cpu_freq;          
-static unsigned int __timer_status; 
+static double __cpu_freq;           // CPU frequency in Hz
+static unsigned int __timer_status; // Timer status
 
+// Estimate CPU frequency using RDTSC and Sleep
 static double __timer_calculate_cpu_freq() {
     const int sleep_ms = 100;
     unsigned long long start = __rdtsc();
@@ -26,7 +27,8 @@ static void __timer_init() {
     __cpu_freq = __timer_calculate_cpu_freq();
     if (__cpu_freq == 0.0) {
         __timer_status = RDTSC_TIMER_ERR_CPU_FREQ;
-    } else {
+    }
+    else {
         __timer_status = RDTSC_TIMER_READY;
     }
 }

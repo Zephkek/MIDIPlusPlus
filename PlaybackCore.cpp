@@ -1,4 +1,4 @@
-#include "PlaybackSystem.hpp"
+﻿#include "PlaybackSystem.hpp"
 #include "InputHeader.h"
 #include "timer.h" 
 #include <cmath>
@@ -332,11 +332,6 @@ PlaybackControl::State PlaybackControl::processCommand(const State& current_stat
     case Command::REWIND:
         new_state.position = (scaled > new_state.position) ? std::chrono::nanoseconds(0)
             : new_state.position - scaled;
-        new_state.needs_reset = true;
-        break;
-    case Command::RESTART:
-        new_state.position = std::chrono::nanoseconds(0);
-        new_state.event_index = 0;
         new_state.needs_reset = true;
         break;
     default:

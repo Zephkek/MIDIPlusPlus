@@ -496,31 +496,26 @@ void VirtualPianoPlayer::play_notes() {
     }
     size_t buffer_size = note_buffer.size();
     size_t current_index = buffer_index.load(std::memory_order_acquire);
-    if (midi::Config::getInstance().auto_transpose.ENABLED) {
-        int suggestedTransposition = toggle_transpose_adjustment();
-        int diff = suggestedTransposition - currentTransposition;
+    if (midi::Config::getInstance().auto_transpose.ENABLED &&
+        [this]() { 
+            int suggestedTransposition = toggle_transpose_adjustment();
+            int diff = suggestedTransposition - currentTransposition;
 
-        std::cout << "Suggested Transposition: " << suggestedTransposition << "\n";
+            if (diff) {
+                std::cout << "Suggested Transposition: " << suggestedTransposition << "\n[Transpose] Adjusting by " << diff << " steps.\n";
 
-        if (diff != 0) {
-            std::cout << "[Transpose] Adjusting by " << diff << " steps.\n";
-
-            std::string upKeyName = midi::Config::getInstance().auto_transpose.TRANSPOSE_UP_KEY;
-            std::string downKeyName = midi::Config::getInstance().auto_transpose.TRANSPOSE_DOWN_KEY;
-
-            int upKey = stringToVK(upKeyName);
-            int downKey = stringToVK(downKeyName);
-
-            WORD scanCode = MapVirtualKey((diff > 0) ? upKey : downKey, MAPVK_VK_TO_VSC);
-            bool isExtended = true;
-
-            for (int i = 0; i < std::abs(diff); ++i) {
-                arrowsend(scanCode, isExtended);  
-                Sleep(50);  // Small delay to ensure input is processed
+                [&]() -> bool { 
+                    auto& cfg = midi::Config::getInstance().auto_transpose;
+                    WORD scanCode = MapVirtualKey(stringToVK(diff > 0 ? cfg.TRANSPOSE_UP_KEY : cfg.TRANSPOSE_DOWN_KEY), MAPVK_VK_TO_VSC);
+                    int steps = std::abs(diff);
+                    // sleeping before arrowsend fixes the off by 1 error
+                    for (int i = 0; i < steps; ++i, Sleep(50) , arrowsend(scanCode, true));
+                    return (currentTransposition = suggestedTransposition) || true; 
+                    }();
+                return true;
             }
-            currentTransposition = suggestedTransposition; 
-        }
-    }
+            return false;
+        }());
     while (!should_stop.load(std::memory_order_acquire)) {
         auto current_time = get_adjusted_time();
 

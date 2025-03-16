@@ -1,4 +1,4 @@
-﻿#ifndef PLAYBACK_SYSTEM_HPP
+#ifndef PLAYBACK_SYSTEM_HPP
 #define PLAYBACK_SYSTEM_HPP
 
 #ifndef NOMINMAX
@@ -218,6 +218,7 @@ public:
     static const std::array<WORD, 256> SCAN_TABLE_AUTO;
 
     MidiFile midi_file;
+    std::vector<NoteEvent*> note_buffer;
 
     // Velocity functions
     void setVelocityCurveIndex(size_t index);
@@ -259,6 +260,7 @@ public:
     std::mutex playback_cv_mutex;
     unsigned long long last_resume_tsc;
     unsigned long long playback_start_time;
+
 private:
     std::mutex buffer_mutex;
     PlaybackControl playback_control;
@@ -307,9 +309,7 @@ private:
     void precompute_volume_adjustments();
     void AdjustVolumeBasedOnVelocity(int velocity) noexcept;
     std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> define_key_mappings();
-
-    // Internal buffers.
-    std::vector<NoteEvent*> note_buffer;
+    // Pool 
     NoteEventPool event_pool;
 
     // Transpose engine and velocity curve index.

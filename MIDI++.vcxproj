@@ -109,6 +109,8 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>kernel32.lib;user32.lib;setupapi.lib;ksuser.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <Profile>true</Profile>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -117,12 +119,12 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_WINDOWS;WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;WIN32;__WINDOWS_MM__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>NotSet</EnableEnhancedInstructionSet>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -134,7 +136,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
-      <AdditionalDependencies>InputInjection.obj;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;user32.lib;setupapi.lib;ksuser.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <Profile>false</Profile>
       <AdditionalLibraryDirectories>winmm.lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
@@ -148,6 +150,8 @@
     <ClCompile Include="MIDIDeviceUI.cpp" />
     <ClCompile Include="MIDIParser.cpp" />
     <ClCompile Include="PlaybackCore.cpp" />
+    <ClCompile Include="RtMidi.cpp" />
+    <ClCompile Include="SplashScreen.cpp" />
     <ClCompile Include="TranspositionCore.cpp" />
     <ClCompile Include="Track.cpp" />
     <ClCompile Include="VelocityFrame.cpp" />
@@ -163,6 +167,8 @@
     <ClInclude Include="midi_structures.h" />
     <ClInclude Include="PlaybackSystem.hpp" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="RtMidi.h" />
+    <ClInclude Include="SplashScreen.h" />
     <ClInclude Include="thread_pool.h" />
     <ClInclude Include="thread_safe_queue.h" />
     <ClInclude Include="timer.h" />

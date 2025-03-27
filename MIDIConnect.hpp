@@ -3,17 +3,12 @@
 #include <atomic>
 #include <array>
 #include <vector>
+#include "RtMidi.h"
+#include "InputHeader.h"
 #include <windows.h>
-#include <winrt/Windows.Devices.Midi.h>
-#include <winrt/Windows.Devices.Enumeration.h>
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Storage.Streams.h>
+#include <timeapi.h>
 
-using namespace winrt;
-using namespace Windows::Devices::Midi;
-using namespace Windows::Devices::Enumeration;
-using namespace Windows::Foundation;
-using namespace Windows::Storage::Streams;
+#define CACHE_LINE_SIZE 64
 
 class MIDIConnect {
 public:
@@ -22,23 +17,14 @@ public:
 
     void OpenDevice(int deviceIndex);
     void CloseDevice();
-
-    // Inlined trivial getters
     inline bool IsActive() const { return m_isActive.load(std::memory_order_relaxed); }
     inline int GetSelectedDevice() const { return m_selectedDevice; }
-
     void SetActive(bool active);
     void ReleaseAllNumpadKeys();
 
 private:
-    void ProcessMidiMessage(IMidiMessage const& midiMessage);
+    static void __stdcall RtMidiCallback(double deltaTime, std::vector<unsigned char>* message, void* userData);
 
-    MidiInPort m_midiInPort{ nullptr };
-    event_token m_messageToken;
-    int m_selectedDevice;
-    std::atomic<bool> m_isActive;
-
-    // Predefined mapping: for each numpad key the "down" and "up" scan codes
     static constexpr struct {
         WORD down;
         WORD up;
@@ -48,15 +34,22 @@ private:
         {0x48, 0x48}, {0x49, 0x49}, {0x4A, 0x4A}, {0x4E, 0x4E}
     };
 
-    // Pre-initialized key buffer to avoid per-event allocations
-    struct KeyBuffer {
-        INPUT inputs[10];
-        bool initialized;
-    } m_keyBuffer;
+    static constexpr size_t MAX_BATCH_INPUTS = 32;
+    alignas(CACHE_LINE_SIZE) std::array<INPUT, MAX_BATCH_INPUTS> m_batchedInputs;
+    alignas(CACHE_LINE_SIZE) std::array<std::array<std::array<INPUT, 10>, 128>, 128> m_noteMapping;
+    alignas(CACHE_LINE_SIZE) std::array<std::array<INPUT, 10>, 128> m_sustainMapping;
 
-    // Precomputed mapping for note events: for every possible note (data1) and velocity (data2)
-    std::array<std::array<std::array<INPUT, 10>, 128>, 128> m_noteMapping;
+    RtMidiIn* m_rtMidiIn;
+    int m_selectedDevice;
+    std::atomic<bool> m_isActive;
+    std::atomic<bool> m_inCallback;
 
-    // Precomputed mapping for sustain events: for every possible sustain value (data2)
-    std::array<std::array<INPUT, 10>, 128> m_sustainMapping;
+    static HANDLE s_mmcssHandle;
+    static DWORD s_mmcssTaskIndex;
+    static DWORD_PTR s_originalAffinity;
+    static ULONG s_timerResolution;
+
+    static bool OptimizeSystem();
+    static void RestoreSystemDefaults();
+    static void SetCallbackThreadPriority();
 };

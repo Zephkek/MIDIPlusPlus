@@ -63,6 +63,12 @@
     <ClCompile Include="MIDI++.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SplashScreen.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RtMidi.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="PlaybackSystem.hpp">
@@ -112,6 +118,12 @@
     </ClInclude>
     <ClInclude Include="timer.h">
       <Filter>Header Files\RobloxPlayback</Filter>
+    </ClInclude>
+    <ClInclude Include="SplashScreen.h">
+      <Filter>Header Files\Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="RtMidi.h">
+      <Filter>Header Files\Parser</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

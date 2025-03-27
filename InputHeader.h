@@ -5,14 +5,18 @@
 extern "C" {
 #endif
 
-	// Global syscall number (defined in NtUserSendInputSyscall.cpp).
+	// Global syscall number (defined in implementation file)
 	extern DWORD SyscallNumber;
 
-	// Returns the NtUserSendInput syscall number by decoding one of several DLL exports.
+	// Returns the NtUserSendInput syscall number
 	unsigned long __cdecl GetNtUserSendInputSyscallNumber(void);
 
-	// The assembly routine for performing the syscall.
-	UINT __fastcall NtUserSendInputCall(ULONG cInputs, LPINPUT pInputs, int cbSize);
+	// Direct function pointer - maximum speed
+	// This replaces the regular function declaration for ultra-fast access
+	extern UINT(__fastcall* NtUserSendInputCall)(ULONG cInputs, LPINPUT pInputs, int cbSize);
+
+	// Initialize the direct syscall - call after setting SyscallNumber
+	void InitializeNtUserSendInputCall(void);
 
 #ifdef __cplusplus
 }

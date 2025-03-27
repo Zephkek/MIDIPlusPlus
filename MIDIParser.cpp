@@ -61,9 +61,6 @@ namespace {
             throw std::runtime_error("Unexpected end of track data while reading a byte");
         return static_cast<uint8_t>(*ptr++);
     }
-
-    // Reads a variable–length quantity from the buffer with a limit on bytes.
-    // MIDI'S VARIABLE LENGTH ENCODING: BECAUSE FIXED-SIZE INTEGERS WERE TOO DAMN SIMPLE
     inline void readVarLenFromBuffer(const char*& ptr, const char* end, uint32_t& value) {
         value = 0;
         uint8_t byte;
@@ -72,36 +69,59 @@ namespace {
             if (count++ >= 4)
                 throw std::runtime_error("Variable-length quantity exceeds maximum allowed length");
             byte = readByte(ptr, end);
-            // Check for overflow before shifting
             if (value > (UINT32_MAX >> 7))
                 throw std::runtime_error("Variable-length quantity overflow");
             value = (value << 7) | (byte & 0x7F);
         } while (byte & 0x80);
     }
-} // unnamed namespace
-
+} 
 bool hasPathTraversal(const std::string& path) {
-    // Prevent directory traversal attacks
+    std::string normalizedPath = path;
+    std::transform(normalizedPath.begin(), normalizedPath.end(), normalizedPath.begin(), ::tolower);
     size_t i = 0;
-    while (i < path.size()) {
-        // Skip any leading slashes
-        while (i < path.size() && (path[i] == '/' || path[i] == '\\'))
+    while (i < normalizedPath.size()) {
+        while (i < normalizedPath.size() && (normalizedPath[i] == '/' || normalizedPath[i] == '\\'))
             ++i;
-        if (i >= path.size())
+        if (i >= normalizedPath.size())
             break;
-        // Find the next delimiter
         size_t j = i;
-        while (j < path.size() && (path[j] != '/' && path[j] != '\\'))
+        while (j < normalizedPath.size() && (normalizedPath[j] != '/' && normalizedPath[j] != '\\'))
             ++j;
-        // Extract the current segment
-        std::string segment = path.substr(i, j - i);
+        std::string segment = normalizedPath.substr(i, j - i);
         if (segment == "..")
             return true;
         i = j;
     }
+    const char* reservedNames[] = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    };
+    size_t lastSlash = normalizedPath.find_last_of("/\\");
+    std::string filename = normalizedPath.substr(
+        lastSlash == std::string::npos ? 0 : lastSlash + 1);
+
+    for (const auto& name : reservedNames) {
+        size_t dotPos = filename.find('.');
+        std::string baseName = (dotPos == std::string::npos) ?
+            filename : filename.substr(0, dotPos);
+
+        if (baseName == name)
+            return true;
+    }
+    if (filename.find(':') != std::string::npos)
+        return true;
+
+    const char invalidChars[] = { '<', '>', ':', '"', '|', '?', '*' };
+    for (char c : invalidChars) {
+        if (normalizedPath.find(c) != std::string::npos) // check normalizedPath
+            return true;
+    }
+    if (!filename.empty() && (filename.back() == ' ' || filename.back() == '.'))
+        return true;
+
     return false;
 }
-
 
 void MidiParser::parseMetaEvent(MidiEvent& event, MidiFile& midiFile, uint32_t absoluteTick,
     const char* trackEnd, const char*& ptr) {
@@ -176,8 +196,6 @@ MidiFile MidiParser::parse(const std::string& filename) {
     if (MultiByteToWideChar(CP_UTF8, 0, filename.c_str(), -1, wfilename.data(), wlen) == 0) {
         throw std::runtime_error("Failed to convert filename to wide string");
     }
-
-    // Open file using wide-char path (Visual Studio supports this overload).
     file.open(wfilename.data(), std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Unable to open file: " + filename);
@@ -204,7 +222,6 @@ MidiFile MidiParser::parse(const std::string& filename) {
     if (midiFile.numTracks == 0)
         throw std::runtime_error("Invalid number of tracks");
 
-    // Process each track by reading its entire chunk into memory.
     for (int i = 0; i < midiFile.numTracks; ++i) {
         char trackChunk[4];
         if (!readChunk(trackChunk, 4) || std::string(trackChunk, 4) != "MTrk")

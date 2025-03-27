@@ -6,6 +6,10 @@
     },
     "CUSTOM_VELOCITY_CURVES": [],
     "HOTKEY_SETTINGS": {
+        "EMERGENCY_EXIT_KEY": "VK_F4",
+        "PLAY_PAUSE_KEY": "VK_F1",
+        "REWIND_KEY": "VK_F2",
+        "SKIP_KEY": "VK_F3",
         "SUSTAIN_KEY": "VK_SPACE",
         "VOLUME_DOWN_KEY": "VK_LEFT",
         "VOLUME_UP_KEY": "VK_RIGHT"
@@ -174,13 +178,9 @@
         "TIMING_VARIATION": 0.1
     },
     "MIDI_SETTINGS": {
-        "FILTER_DRUMS": true
+        "DETECT_DRUMS": true
     },
-    "PLAYLIST_FILES": [],
     "STACKED_NOTE_HANDLING_MODE": "LIFO",
-    "UI_SETTINGS": {
-        "alwaysOnTop": false
-    },
     "VOLUME_SETTINGS": {
         "ADJUSTMENT_INTERVAL_MS": 50,
         "INITIAL_VOLUME": 100,

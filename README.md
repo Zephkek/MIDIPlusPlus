@@ -106,7 +106,6 @@ The system will automatically interpolate between these values to ensure smooth 
 
 - Windows 10/11 64-bit
 - Visual C++ Redistributable 2022
-- CPU that supports AVX2
 
 ## Configuration Guide
 

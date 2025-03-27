@@ -1,4 +1,4 @@
-#ifndef PLAYBACK_SYSTEM_HPP
+﻿#ifndef PLAYBACK_SYSTEM_HPP
 #define PLAYBACK_SYSTEM_HPP
 
 #ifndef NOMINMAX
@@ -251,7 +251,7 @@ public:
     std::atomic<int> max_volume{ 0 };
     std::vector<bool> drum_flags;
     std::unique_ptr<std::jthread> hotkey_thread;
-    std::atomic<bool> hotkey_stop{ false }; // new flag for hotkey thread
+    std::atomic<bool> hotkey_stop{ false }; 
     void hotkey_listener();
     void emergency_exit();
     bool isTrackEnabled(int trackIndex) const;
@@ -272,7 +272,6 @@ private:
 
     // Thread pool for processing note events.
     dp::thread_pool<> processing_pool;
-
 
     // Helper to signal playback thread (notify condition variable and legacy event)
     inline void signalPlayback() noexcept {
@@ -312,7 +311,6 @@ private:
     // Pool 
     NoteEventPool event_pool;
 
-    // Transpose engine and velocity curve index.
     TransposeEngine transposeEngine;
     size_t currentVelocityCurveIndex = 0;
 };

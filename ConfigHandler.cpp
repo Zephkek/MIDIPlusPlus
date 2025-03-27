@@ -17,17 +17,6 @@ namespace midi {
         if (ADJUSTMENT_INTERVAL_MS < 0) throw ConfigException("ADJUSTMENT_INTERVAL_MS cannot be negative");
     }
 
-    void LegitModeSettings::validate() const {
-        if (TIMING_VARIATION < 0.0 || TIMING_VARIATION > 1.0)
-            throw ConfigException("TIMING_VARIATION must be between 0.0 and 1.0");
-        if (NOTE_SKIP_CHANCE < 0.0 || NOTE_SKIP_CHANCE > 1.0)
-            throw ConfigException("NOTE_SKIP_CHANCE must be between 0.0 and 1.0");
-        if (EXTRA_DELAY_CHANCE < 0.0 || EXTRA_DELAY_CHANCE > 1.0)
-            throw ConfigException("EXTRA_DELAY_CHANCE must be between 0.0 and 1.0");
-        if (EXTRA_DELAY_MIN < 0.0) throw ConfigException("EXTRA_DELAY_MIN cannot be negative");
-        if (EXTRA_DELAY_MAX < EXTRA_DELAY_MIN)
-            throw ConfigException("EXTRA_DELAY_MAX cannot be less than EXTRA_DELAY_MIN");
-    }
 
     void AutoTranspose::validate() const {
         if (TRANSPOSE_UP_KEY.empty() || TRANSPOSE_DOWN_KEY.empty()) {
@@ -35,8 +24,15 @@ namespace midi {
         }
     }
 
+    void AutoplayerTimingAccuracy::validate() const {
+        if (MAX_PASSES <= 0)
+            throw ConfigException("MAX_PASSES must be positive");
+        if (MEASURE_SEC <= 0.0)
+            throw ConfigException("MEASURE_SEC must be positive");
+    }
+
     void MIDISettings::validate() const {
-        //abcdefg
+        // No specific validation needed for DETECT_DRUMS
     }
 
     void HotkeySettings::validate() const {
@@ -108,9 +104,9 @@ namespace midi {
             midi.validate();
             playback.validate();
             volume.validate();
-            legit_mode.validate();
             auto_transpose.validate();
             hotkeys.validate();
+            autoplayer_timing.validate();
             validateKeyMappings();
         }
         catch (const ConfigException& e) {
@@ -175,27 +171,6 @@ namespace midi {
         v.validate();
     }
 
-    void to_json(json& j, const LegitModeSettings& l) {
-        j = json{
-            {"ENABLED", l.ENABLED},
-            {"TIMING_VARIATION", l.TIMING_VARIATION},
-            {"NOTE_SKIP_CHANCE", l.NOTE_SKIP_CHANCE},
-            {"EXTRA_DELAY_CHANCE", l.EXTRA_DELAY_CHANCE},
-            {"EXTRA_DELAY_MIN", l.EXTRA_DELAY_MIN},
-            {"EXTRA_DELAY_MAX", l.EXTRA_DELAY_MAX}
-        };
-    }
-
-    void from_json(const json& j, LegitModeSettings& l) {
-        j.at("ENABLED").get_to(l.ENABLED);
-        j.at("TIMING_VARIATION").get_to(l.TIMING_VARIATION);
-        j.at("NOTE_SKIP_CHANCE").get_to(l.NOTE_SKIP_CHANCE);
-        j.at("EXTRA_DELAY_CHANCE").get_to(l.EXTRA_DELAY_CHANCE);
-        j.at("EXTRA_DELAY_MIN").get_to(l.EXTRA_DELAY_MIN);
-        j.at("EXTRA_DELAY_MAX").get_to(l.EXTRA_DELAY_MAX);
-        l.validate();
-    }
-
     void to_json(json& j, const AutoTranspose& at) {
         j = json{
             {"ENABLED", at.ENABLED},
@@ -210,14 +185,28 @@ namespace midi {
         j.at("TRANSPOSE_DOWN_KEY").get_to(at.TRANSPOSE_DOWN_KEY);
     }
 
+    void to_json(json& j, const AutoplayerTimingAccuracy& a) {
+        j = json{
+            {"MAX_PASSES", a.MAX_PASSES},
+            {"MEASURE_SEC", a.MEASURE_SEC}
+        };
+    }
+
+    void from_json(const json& j, AutoplayerTimingAccuracy& a) {
+        j.at("MAX_PASSES").get_to(a.MAX_PASSES);
+        j.at("MEASURE_SEC").get_to(a.MEASURE_SEC);
+        a.validate();
+    }
+
     void to_json(json& j, const MIDISettings& m) {
-        j = json{ {"FILTER_DRUMS", m.FILTER_DRUMS} };
+        j = json{ {"DETECT_DRUMS", m.DETECT_DRUMS} };
     }
 
     void from_json(const json& j, MIDISettings& m) {
-        j.at("FILTER_DRUMS").get_to(m.FILTER_DRUMS);
+        j.at("DETECT_DRUMS").get_to(m.DETECT_DRUMS);
         m.validate();
     }
+
     void to_json(nlohmann::json& j, const UISettings& ui) {
         j = nlohmann::json{ {"alwaysOnTop", ui.alwaysOnTop} };
     }
@@ -282,10 +271,10 @@ namespace midi {
         j = json{
             {"VOLUME_SETTINGS", c.volume},
             {"KEY_MAPPINGS", c.key_mappings},
-            {"LEGIT_MODE_SETTINGS", c.legit_mode},
             {"AUTO_TRANSPOSE", c.auto_transpose},
             {"HOTKEY_SETTINGS", c.hotkeys},
-            {"MIDI_SETTINGS", json{{"FILTER_DRUMS", c.midi.FILTER_DRUMS}}},
+            {"MIDI_SETTINGS", json{{"DETECT_DRUMS", c.midi.DETECT_DRUMS}}},
+            {"AUTOPLAYER_TIMING_ACCURACY", c.autoplayer_timing},
             {"STACKED_NOTE_HANDLING_MODE", Config::noteHandlingModeToString(c.playback.noteHandlingMode)},
             {"CUSTOM_VELOCITY_CURVES", json::array()},
             {"PLAYLIST_FILES", c.playlistFiles},
@@ -303,10 +292,13 @@ namespace midi {
     void from_json(const json& j, Config& c) {
         j.at("VOLUME_SETTINGS").get_to(c.volume);
         j.at("KEY_MAPPINGS").get_to(c.key_mappings);
-        j.at("LEGIT_MODE_SETTINGS").get_to(c.legit_mode);
         j.at("AUTO_TRANSPOSE").get_to(c.auto_transpose);
         j.at("HOTKEY_SETTINGS").get_to(c.hotkeys);
-        j.at("MIDI_SETTINGS").at("FILTER_DRUMS").get_to(c.midi.FILTER_DRUMS);
+        j.at("MIDI_SETTINGS").at("DETECT_DRUMS").get_to(c.midi.DETECT_DRUMS);
+
+        if (j.contains("AUTOPLAYER_TIMING_ACCURACY")) {
+            j.at("AUTOPLAYER_TIMING_ACCURACY").get_to(c.autoplayer_timing);
+        }
 
         if (j.contains("STACKED_NOTE_HANDLING_MODE")) {
             std::string mode = j.at("STACKED_NOTE_HANDLING_MODE").get<std::string>();
@@ -331,13 +323,10 @@ namespace midi {
             }
         }
 
-        // New: read UI settings
+        // Read UI settings
         if (j.contains("UI_SETTINGS")) {
             j.at("UI_SETTINGS").get_to(c.ui);
         }
-
-        // Validate at the end
-        c.validate();
     }
 
     void Config::setDefaults() {
@@ -349,17 +338,6 @@ namespace midi {
             10,     // VOLUME_STEP
             50      // ADJUSTMENT_INTERVAL_MS
         };
-
-        // Legit mode settings
-        legit_mode = {
-            false,  // ENABLED
-            0.1,    // TIMING_VARIATION
-            0.02,   // NOTE_SKIP_CHANCE
-            0.05,   // EXTRA_DELAY_CHANCE
-            0.05,   // EXTRA_DELAY_MIN
-            0.2     // EXTRA_DELAY_MAX
-        };
-
         // AutoTranspose settings
         auto_transpose = {
             false,      // ENABLED
@@ -367,10 +345,19 @@ namespace midi {
             "VK_DOWN"   // TRANSPOSE_DOWN_KEY
         };
 
-        // MIDI settings
-        midi = { true }; // FILTER_DRUMS
+        // Autoplayer timing accuracy settings
+        autoplayer_timing = {
+            20,     // MAX_PASSES 
+            1.0     // MEASURE_SEC
+        };
 
-        // Hotkey settings (updated with additional keys)
+        // MIDI settings
+        midi = { true }; // DETECT_DRUMS
+
+        // UI settings
+        ui = { true }; // alwaysOnTop
+
+        // Hotkey settings
         hotkeys = {
             "VK_SPACE",    // SUSTAIN_KEY
             "VK_RIGHT",    // VOLUME_UP_KEY
@@ -425,4 +412,4 @@ namespace midi {
         validate();
     }
 
-} // namespace midi
+}

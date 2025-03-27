@@ -1,4 +1,4 @@
-#include "Transpose.h"
+﻿#include "Transpose.h"
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -173,7 +173,7 @@ static double matrixInnerProduct(const std::vector<std::vector<double>>& A,
 }
 
 // =============================================================================
-// Key Profiles (from Krumhansl�Kessler, verified)
+// Key Profiles (from Krumhansl–Kessler, verified)
 // =============================================================================
 const std::array<double, 12> MAJOR_PROFILE = {
     0.748, 0.060, 0.488, 0.082, 0.670, 0.460,

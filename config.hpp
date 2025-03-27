@@ -40,18 +40,6 @@ namespace midi {
 
         void validate() const;
     };
-
-    struct LegitModeSettings {
-        bool ENABLED = false;
-        double TIMING_VARIATION = 0.1;
-        double NOTE_SKIP_CHANCE = 0.02;
-        double EXTRA_DELAY_CHANCE = 0.05;
-        double EXTRA_DELAY_MIN = 0.05;
-        double EXTRA_DELAY_MAX = 0.2;
-
-        void validate() const;
-    };
-
     struct AutoTranspose {
         bool ENABLED = false;
         std::string TRANSPOSE_UP_KEY = "VK_UP";   // Default to Up Arrow
@@ -60,12 +48,19 @@ namespace midi {
         void validate() const;
     };
 
+    struct AutoplayerTimingAccuracy {
+        int MAX_PASSES = 20;
+        double MEASURE_SEC = 1.0;
+
+        void validate() const;
+    };
 
     struct UISettings {
         bool alwaysOnTop = false;
     };
+
     struct MIDISettings {
-        bool FILTER_DRUMS = true;
+        bool DETECT_DRUMS = true;
 
         void validate() const;
     };
@@ -99,10 +94,10 @@ namespace midi {
         MIDISettings midi;
         PlaybackSettings playback;
         VolumeSettings volume;
-        LegitModeSettings legit_mode;
         AutoTranspose auto_transpose;
         HotkeySettings hotkeys;
         UISettings ui;
+        AutoplayerTimingAccuracy autoplayer_timing;
         std::map<std::string, std::map<std::string, std::string>> key_mappings;
         std::map<std::string, std::string> controls;
         std::vector<std::string> playlistFiles;
@@ -131,10 +126,10 @@ namespace midi {
     // JSON conversion functions declarations
     void to_json(nlohmann::json& j, const VolumeSettings& v);
     void from_json(const nlohmann::json& j, VolumeSettings& v);
-    void to_json(nlohmann::json& j, const LegitModeSettings& l);
-    void from_json(const nlohmann::json& j, LegitModeSettings& l);
     void to_json(nlohmann::json& j, const AutoTranspose& l);
     void from_json(const nlohmann::json& j, AutoTranspose& l);
+    void to_json(nlohmann::json& j, const AutoplayerTimingAccuracy& a);
+    void from_json(const nlohmann::json& j, AutoplayerTimingAccuracy& a);
     void to_json(nlohmann::json& j, const MIDISettings& m);
     void from_json(const nlohmann::json& j, MIDISettings& m);
     void to_json(nlohmann::json& j, const HotkeySettings& h);

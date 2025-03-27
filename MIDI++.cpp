@@ -1,4 +1,4 @@
-// never writing any UI in C++ ever again
+﻿// never writing any UI in C++ ever again
 
 #include "PlaybackSystem.hpp"
 #include "TrackControl.hpp"
@@ -34,6 +34,7 @@
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Gdiplus.lib")
+#pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 // -----------------------------------------------------------------------------
 // RAII wrappers for HANDLE and GDI+ token
@@ -708,10 +709,8 @@ static void UpdateMidiDetails() {
     default: modeStr = "None"; break;
     }
     std::string lastLine = "Note Mode: " + modeStr;
-    bool legit = midi::Config::getInstance().legit_mode.ENABLED;
-    bool filterDrums = midi::Config::getInstance().midi.FILTER_DRUMS;
-    lastLine += (legit ? " (Legit Mode)" : " (Normal Mode)");
-    lastLine += (filterDrums ? " (Ch10 Filter: On)" : " (Ch10 Filter: Off)");
+    bool filterDrums = midi::Config::getInstance().midi.DETECT_DRUMS;
+    lastLine += (filterDrums ? " (Drum Detect: On)" : " (Ch10 Filter: Off)");
     SendMessageA(g_editDetails, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(lastLine.c_str()));
 }
 static void UpdateTrackInfo() {
@@ -889,12 +888,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // temporary fix: this shit
     case WM_NCLBUTTONDOWN:
     {
-        if (g_player &&
-            g_player->midiFileSelected.load(std::memory_order_acquire) &&
-            !g_player->paused.load(std::memory_order_acquire) &&
-            g_player->playback_started.load(std::memory_order_acquire) &&
-            (g_player->buffer_index.load(std::memory_order_acquire) < g_player->note_buffer.size()) &&
-            wParam == HTCAPTION)
+        if ((g_midi2key && g_midi2key->IsActive()) ||
+            (g_midiConnect && g_midiConnect->IsActive()) ||
+            (g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire) &&
+                !g_player->paused.load(std::memory_order_acquire) &&
+                g_player->playback_started.load(std::memory_order_acquire) &&
+                (g_player->buffer_index.load(std::memory_order_acquire) < g_player->note_buffer.size()) &&
+                wParam == HTCAPTION))
         {
             return 0;
         }
@@ -1971,7 +1972,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 // -----------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     srand(static_cast<unsigned int>(time(NULL)));
-
     UniqueHandle singleInstanceMutex(CreateMutexW(nullptr, TRUE, L"Global\\MIDI++_On_Top"));
     g_hSingleInstanceMutex = singleInstanceMutex;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -1983,20 +1983,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         }
         return 0;
     }
-
     GdiplusTokenWrapper gdiplusToken;
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     if (Gdiplus::GdiplusStartup(&gdiplusToken.token, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
         MessageBoxA(nullptr, "Failed to initialize GDI+.", "Error", MB_ICONERROR);
         return -1;
     }
-
     static VirtualPianoPlayer player;
     g_player = &player;
-
     RedirectCout();
     auto& cfg = midi::Config::getInstance();
-
     std::cout << " ===== MIDI++ v1.0.4.R5 | Developed by Zeph, Tested by Gene =====\n";
     std::cout << "Hotkeys:\n";
     std::cout << "  Play/Pause:     " << getReadableKey(cfg.hotkeys.PLAY_PAUSE_KEY) << "\n";
@@ -2021,7 +2017,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     wc.hIcon = hIcon;
     wc.hIconSm = hIconSmall;
     RegisterClassExW(&wc);
-    g_hMainWnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_APPWINDOW | WS_EX_LAYERED,
+    g_hMainWnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_LAYERED | WS_EX_TOPMOST,
         wc.lpszClassName,
         L"MIDI++ v1.0.4.R5",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
@@ -2031,15 +2027,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         nullptr,
         hInstance,
         nullptr);
+
     SetLayeredWindowAttributes(g_hMainWnd, 0, 255, LWA_ALPHA);
+
     if (!g_hMainWnd) {
         MessageBoxA(nullptr, "Failed to create main window!", "Error", MB_ICONERROR);
         return -1;
     }
+    SetTimer(NULL, 1, 100, [](HWND, UINT, UINT_PTR timerId, DWORD) {
+        KillTimer(NULL, timerId);
+        if (g_hMainWnd) {
+            if (IsIconic(g_hMainWnd)) {
+                ShowWindow(g_hMainWnd, SW_RESTORE);
+            }
+        }
+        });
     ShowWindow(g_hMainWnd, SW_SHOW);
     UpdateWindow(g_hMainWnd);
-    MSG msg;
 
+    MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);

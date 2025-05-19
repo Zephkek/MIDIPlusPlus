@@ -1,4 +1,3 @@
-
 #include "PlaybackSystem.hpp"
 #include "TrackControl.hpp"
 #include "VelocityCurveEditor.hpp"

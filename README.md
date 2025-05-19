@@ -131,9 +131,6 @@ Speed         - Real-time playback rate adjustment
 ### Zero Latency MIDI-to-QWERTY Conversion
 https://github.com/user-attachments/assets/3b567203-da44-4a30-969d-6831ef1c6067
 
-### Stable under stresss (MIDI Tested: Ouranos - HDSQ & The Romanticist [v1.6.6])  (LOUD WARNING!)
-https://github.com/user-attachments/assets/22f449d6-dd8b-450b-b743-2adbc044109b
-
 *Thanks to the amazing feedback of our community and especially Testers MIDI++'s stability has been enhanced through all kinds of scenarios*
 ### Remappable keys to fit any game:
 
@@ -157,12 +154,3 @@ We would like to extend our deepest gratitude to all the individuals who have co
 - **Gene**  
   *For your unwavering support, insightful feedback, and continuous encouragement throughout the development cycle.
 
-### Heartfelt Thanks To
-
-- **The Amazing Community**  
-  *Your testing, suggestions, and enthusiasm have significantly enhanced MIDI++'s stability and performance.*
-  
-- **Contributors & Collaborators**  
-  *Thank you for your code contributions, bug reports, and feature requests that have helped shape MIDI++.*
-
----

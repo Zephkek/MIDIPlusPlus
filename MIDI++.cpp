@@ -1,4 +1,3 @@
-﻿// never writing any UI in C++ ever again
 
 #include "PlaybackSystem.hpp"
 #include "TrackControl.hpp"

@@ -13,7 +13,6 @@
 
 **MIDI++** is an advanced MIDI Autoplayer and MIDI-to-QWERTY conversion tool designed specifically for virtual piano applications, providing seamless integration for both live play and automated performances.
 
-> **IMPORTANT:** MIDI++ is a Windows-only application and requires Windows 10/11 (64-bit) to run.
 
 ## Key Features
 * **Zero Latency:** Precise MIDI-to-QWERTY conversion with less than 0.5ms latency.

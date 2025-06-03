@@ -305,7 +305,7 @@ void __stdcall MIDI2Key::RtMidiCallback(double, std::vector<unsigned char>* mess
                 const auto& velData = MIDITables::g_velocityData[data2];
                 if (velData.hasValidKey && velData.keyChar != s_lastVelocityKey) {
                     s_lastVelocityKey = velData.keyChar;
-                    size_t toCopy = std::min(velData.inputCount, MAX_BATCH_INPUTSS - inputCount);
+                    size_t toCopy = std::min(velData.inputCount, MAX_BATCH_INPUTS - inputCount);
                     std::memcpy(batched + inputCount, velData.inputs, toCopy * sizeof(INPUT));
                     inputCount += toCopy;
                 }
@@ -320,7 +320,7 @@ void __stdcall MIDI2Key::RtMidiCallback(double, std::vector<unsigned char>* mess
                 if (owner && owner != noteData.keyEvent) {
                     short oldCount = MIDITables::g_scancodeCount[sc].exchange(0);
                     if (oldCount > 0) {
-                        size_t toCopy = std::min(owner->releaseCount, MAX_BATCH_INPUTSS - inputCount);
+                        size_t toCopy = std::min(owner->releaseCount, MAX_BATCH_INPUTS - inputCount);
                         std::memcpy(batched + inputCount, owner->release, toCopy * sizeof(INPUT));
                         inputCount += toCopy;
                     }
@@ -328,7 +328,7 @@ void __stdcall MIDI2Key::RtMidiCallback(double, std::vector<unsigned char>* mess
                 }
                 short count = MIDITables::g_scancodeCount[sc];
                 if (count == 0) {
-                    size_t toCopy = std::min(noteData.keyEvent->pressCount, MAX_BATCH_INPUTSS - inputCount);
+                    size_t toCopy = std::min(noteData.keyEvent->pressCount, MAX_BATCH_INPUTS - inputCount);
                     std::memcpy(batched + inputCount, noteData.keyEvent->press, toCopy * sizeof(INPUT));
                     inputCount += toCopy;
                     MIDITables::g_scancodeOwner[sc] = noteData.keyEvent;
@@ -349,7 +349,7 @@ void __stdcall MIDI2Key::RtMidiCallback(double, std::vector<unsigned char>* mess
                 if (MIDITables::g_scancodeOwner[sc] == noteData.keyEvent) {
                     short count = MIDITables::g_scancodeCount[sc]--;
                     if (count == 1) {
-                        size_t toCopy = std::min(noteData.keyEvent->releaseCount, MAX_BATCH_INPUTSS - inputCount);
+                        size_t toCopy = std::min(noteData.keyEvent->releaseCount, MAX_BATCH_INPUTS - inputCount);
                         std::memcpy(batched + inputCount, noteData.keyEvent->release, toCopy * sizeof(INPUT));
                         inputCount += toCopy;
                         MIDITables::g_scancodeOwner[sc] = nullptr;
@@ -369,7 +369,7 @@ void __stdcall MIDI2Key::RtMidiCallback(double, std::vector<unsigned char>* mess
             if (MIDITables::g_scancodeOwner[sc] == noteData.keyEvent) {
                 short count = MIDITables::g_scancodeCount[sc]--;
                 if (count == 1) {
-                    size_t toCopy = std::min(noteData.keyEvent->releaseCount, MAX_BATCH_INPUTSS - inputCount);
+                    size_t toCopy = std::min(noteData.keyEvent->releaseCount, MAX_BATCH_INPUTS - inputCount);
                     std::memcpy(batched + inputCount, noteData.keyEvent->release, toCopy * sizeof(INPUT));
                     inputCount += toCopy;
                     MIDITables::g_scancodeOwner[sc] = nullptr;
@@ -384,7 +384,7 @@ void __stdcall MIDI2Key::RtMidiCallback(double, std::vector<unsigned char>* mess
             bool pedalOn = data2 >= SUSTAIN_CUTOFF;
             bool shouldPress = (player.currentSustainMode == SustainMode::SPACE_DOWN) ? pedalOn : !pedalOn;
             if (shouldPress != player.isSustainPressed) {
-                if (inputCount < MAX_BATCH_INPUTSS) {
+                if (inputCount < MAX_BATCH_INPUTS) {
                     batched[inputCount++] = shouldPress ?
                         MIDITables::g_sustainData.pressInput : MIDITables::g_sustainData.releaseInput;
                     player.isSustainPressed = shouldPress;

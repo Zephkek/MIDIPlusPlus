@@ -9,7 +9,7 @@
 #include "RtMidi.h"
 #include "PlaybackSystem.hpp" // Assumes this includes VirtualPianoPlayer
 #define CACHE_LINE_SIZE 64
-#define MAX_BATCH_INPUTSS 32
+#define MAX_BATCH_INPUTS 32
 // MIDI command constants
 constexpr unsigned char MIDI_NOTE_ON = 0x90;
 constexpr unsigned char MIDI_NOTE_OFF = 0x80;
@@ -36,7 +36,7 @@ private:
     std::atomic<bool> m_isActive;
     VirtualPianoPlayer* m_player;
     std::atomic<bool> m_inCallback;
-    std::array<INPUT, MAX_BATCH_INPUTSS> m_batchedInputs;
+    std::array<INPUT, MAX_BATCH_INPUTS> m_batchedInputs;
     static char s_lastVelocityKey;
     static HANDLE s_mmcssHandle;
     static DWORD s_mmcssTaskIndex;

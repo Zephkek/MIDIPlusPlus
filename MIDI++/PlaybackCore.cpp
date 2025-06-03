@@ -1644,15 +1644,14 @@ void VirtualPianoPlayer::emergency_exit() {
 }
 
 void VirtualPianoPlayer::initializeKeyCache() {
-    static thread_local std::unordered_map<std::string, KeySequence> keyCache;
     for (const auto& [note, key] : limited_key_mappings) {
-        if (!key.empty()) {
-            keyCache.emplace(key, computeKeySequence(key));
+        if (!key.empty() && g_keyCache.find(key) == g_keyCache.end()) {
+            g_keyCache.emplace(key, computeKeySequence(key));
         }
     }
     for (const auto& [note, key] : full_key_mappings) {
-        if (!key.empty()) {
-            keyCache.emplace(key, computeKeySequence(key));
+        if (!key.empty() && g_keyCache.find(key) == g_keyCache.end()) {
+            g_keyCache.emplace(key, computeKeySequence(key));
         }
     }
 }

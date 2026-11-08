@@ -1,4 +1,4 @@
-﻿#include "Transpose.h"
+#include "Transpose.h"
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -47,7 +47,7 @@ static std::vector<double> gaussianSmooth(const std::vector<double>& data, doubl
     for (size_t i = 0; i < data.size(); ++i) {
         double accum = 0.0;
         for (int j = -radius; j <= radius; ++j) {
-            int idx = (i + j + data.size()) % data.size();
+            int idx = static_cast<int>((i + j + data.size()) % data.size());
             accum += data[idx] * kernel[j + radius];
         }
         smoothed[i] = accum;
@@ -173,7 +173,7 @@ static double matrixInnerProduct(const std::vector<std::vector<double>>& A,
 }
 
 // =============================================================================
-// Key Profiles (from Krumhansl–Kessler, verified)
+// Key Profiles (from Krumhansl-Kessler, verified)
 // =============================================================================
 const std::array<double, 12> MAJOR_PROFILE = {
     0.748, 0.060, 0.488, 0.082, 0.670, 0.460,
@@ -282,14 +282,10 @@ std::string TransposeEngine::estimateKey(const std::vector<int>& notes,
 // =============================================================================
 // Genre Detection with Enhanced Features (including spectral centroid)
 // =============================================================================
-std::string TransposeEngine::detectGenre(const MidiFile& midiFile) const {
-    auto [notes, durations] = extractNotesAndDurations(midiFile);
+std::string TransposeEngine::detectGenre(const std::vector<int>& notes,
+    const std::vector<double>& durations, double tempo, int timeSignatureNum) const {
     if (notes.empty())
         return "Unknown";
-    double tempo = midiFile.tempoChanges.empty() ? 120.0 :
-        60000000.0 / midiFile.tempoChanges[0].microsecondsPerQuarter;
-    int timeSignatureNum = midiFile.timeSignatures.empty() ? 4 :
-        midiFile.timeSignatures[0].numerator;
     double totalDuration = std::accumulate(durations.begin(), durations.end(), 0.0);
     double noteDensity = static_cast<double>(notes.size()) / totalDuration;
     double rhythmComplexity = calculateRhythmComplexity(durations);
@@ -346,8 +342,8 @@ std::string TransposeEngine::detectGenre(const MidiFile& midiFile) const {
 // Best Transposition Decision (Composite Evaluation)
 // =============================================================================
 int TransposeEngine::findBestTranspose(const std::vector<int>& notes,
-    const std::vector<double>& durations,
-    const std::string& detectedKey,
+    const std::vector<double>&,
+    const std::string&,
     const std::string& genre) const {
     if (notes.empty())
         return 0;
@@ -364,45 +360,6 @@ int TransposeEngine::findBestTranspose(const std::vector<int>& notes,
         }
     }
     return bestTranspose;
-}
-
-// =============================================================================
-// MIDI Data Extraction
-// =============================================================================
-std::pair<std::vector<int>, std::vector<double>> TransposeEngine::extractNotesAndDurations(
-    const MidiFile& midiFile) const {
-    std::vector<int> notes;
-    std::vector<double> durations;
-    for (const auto& track : midiFile.tracks) {
-        std::map<int, double> activeNotes;
-        double currentTime = 0.0;
-        double tempo = 500000.0;  // default tempo (120 BPM)
-        double ticksPerQuarterNote = midiFile.division;
-        double lastTick = 0.0;
-        for (const auto& event : track.events) {
-            if (event.status == 0xFF && event.data1 == 0x51 && event.metaData.size() == 3) {
-                tempo = static_cast<double>((event.metaData[0] << 16) |
-                    (event.metaData[1] << 8) |
-                    event.metaData[2]);
-            }
-            double deltaTime = static_cast<double>(event.absoluteTick - lastTick);
-            currentTime += deltaTime * (tempo / 1000000.0) / ticksPerQuarterNote;
-            lastTick = event.absoluteTick;
-            if ((event.status & 0xF0) == 0x90 && event.data2 > 0)
-                activeNotes[event.data1] = currentTime;
-            else if (((event.status & 0xF0) == 0x80) ||
-                ((event.status & 0xF0) == 0x90 && event.data2 == 0)) {
-                auto it = activeNotes.find(event.data1);
-                if (it != activeNotes.end()) {
-                    double duration = currentTime - it->second;
-                    notes.push_back(event.data1);
-                    durations.push_back(duration);
-                    activeNotes.erase(it);
-                }
-            }
-        }
-    }
-    return { notes, durations };
 }
 
 // =============================================================================
@@ -595,7 +552,7 @@ double TransposeEngine::calculateHarmonicSmoothness(const std::vector<int>& note
     double total = static_cast<double>(transposedNotes.size());
     for (double& c : counts)
         c /= total;
-    int newKey = std::distance(counts.begin(), std::max_element(counts.begin(), counts.end()));
+    int newKey = static_cast<int>(std::distance(counts.begin(), std::max_element(counts.begin(), counts.end())));
     std::set<int> chordTones = { newKey, (newKey + 4) % 12, (newKey + 7) % 12 };
     double chordSum = 0.0;
     for (int tone : chordTones)
@@ -622,7 +579,7 @@ double TransposeEngine::calculateMicrotonalPenalty(const std::vector<int>& notes
 }
 
 double TransposeEngine::calculateGenreSpecificTransposeScore(int newKeyIndex,
-    int keySignatureComplexity,
+    int,
     const std::string& genre,
     int transpose) const {
     double score = 0.0;

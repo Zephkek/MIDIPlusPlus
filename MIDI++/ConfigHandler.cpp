@@ -1,374 +1,151 @@
 #include "config.hpp"
-#include <fstream>
-#include <iostream>
+#include "Input.hpp"
+#include <windows.h>
 #include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <sstream>
 
 namespace midi {
 
     using json = nlohmann::json;
 
-    void VolumeSettings::validate() const {
-        if (MIN_VOLUME < 0) throw ConfigException("MIN_VOLUME cannot be negative");
-        if (MAX_VOLUME > 200) throw ConfigException("MAX_VOLUME cannot exceed 200");
-        if (MIN_VOLUME > MAX_VOLUME) throw ConfigException("MIN_VOLUME cannot be greater than MAX_VOLUME");
-        if (INITIAL_VOLUME < MIN_VOLUME || INITIAL_VOLUME > MAX_VOLUME)
-            throw ConfigException("INITIAL_VOLUME must be between MIN_VOLUME and MAX_VOLUME");
-        if (VOLUME_STEP <= 0) throw ConfigException("VOLUME_STEP must be positive");
-        if (ADJUSTMENT_INTERVAL_MS < 0) throw ConfigException("ADJUSTMENT_INTERVAL_MS cannot be negative");
-    }
+    namespace {
 
+        using Warnings = std::vector<std::string>;
 
-    void AutoTranspose::validate() const {
-        if (TRANSPOSE_UP_KEY.empty() || TRANSPOSE_DOWN_KEY.empty()) {
-            throw ConfigException("Transpose hotkeys cannot be empty");
-        }
-    }
-
-    void AutoplayerTimingAccuracy::validate() const {
-        if (MAX_PASSES <= 0)
-            throw ConfigException("MAX_PASSES must be positive");
-        if (MEASURE_SEC <= 0.0)
-            throw ConfigException("MEASURE_SEC must be positive");
-    }
-
-    void MIDISettings::validate() const {
-        // No specific validation needed for DETECT_DRUMS
-    }
-
-    void HotkeySettings::validate() const {
-        auto validateKey = [](const std::string& key) {
-            if (key.empty())
-                throw ConfigException("Hotkey cannot be empty");
-            if (key.find("VK_") != 0)
-                throw ConfigException("Hotkey must start with 'VK_'");
-            };
-        validateKey(SUSTAIN_KEY);
-        validateKey(VOLUME_UP_KEY);
-        validateKey(VOLUME_DOWN_KEY);
-        validateKey(PLAY_PAUSE_KEY);
-        validateKey(REWIND_KEY);
-        validateKey(SKIP_KEY);
-        validateKey(EMERGENCY_EXIT_KEY);
-    }
-
-    void PlaybackSettings::validate() const {
-        for (const auto& curve : customVelocityCurves) {
-            if (curve.name.empty()) {
-                throw ConfigException("Custom velocity curve name cannot be empty");
+        template <class T>
+        void pick(const json& obj, const char* key, T& out, Warnings& warn, const std::string& where) {
+            if (!obj.is_object())
+                return;
+            auto it = obj.find(key);
+            if (it == obj.end())
+                return;
+            try {
+                out = it->get<T>();
             }
-
-            for (size_t i = 0; i < curve.velocityValues.size(); i++) {
-                if (curve.velocityValues[i] < 0 || curve.velocityValues[i] > 127) {
-                    throw ConfigException("Velocity value in curve '" + curve.name +
-                        "' must be between 0 and 127");
-                }
+            catch (const json::exception&) {
+                warn.push_back(where + key + " has the wrong type, using the default");
             }
         }
+
+        template <class T>
+        std::string text(T v) {
+            std::ostringstream s;
+            s << v;
+            return s.str();
+        }
+
+        template <class T>
+        void clamp_to(T& v, T lo, T hi, const char* key, Warnings& warn, const std::string& where) {
+            if (v < lo || v > hi) {
+                T c = std::clamp(v, lo, hi);
+                warn.push_back(where + key + " = " + text(v) + " is out of range, using " + text(c));
+                v = c;
+            }
+        }
+
+        std::string upper(std::string s) {
+            for (char& c : s)
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            return s;
+        }
+
+        const char* waitName(LiveWait m) {
+            switch (m) {
+            case LiveWait::Spin: return "SPIN";
+            case LiveWait::SpinThenBlock: return "SPIN_THEN_BLOCK";
+            default: return "BLOCK";
+            }
+        }
+
+        const char* sustainName(SustainMode m) {
+            switch (m) {
+            case SustainMode::Down: return "DOWN";
+            case SustainMode::Up: return "UP";
+            default: return "IGNORE";
+            }
+        }
+
+        void hotkey(const json& obj, const char* key, std::string& out, Warnings& warn) {
+            std::string v = out;
+            pick(obj, key, v, warn, "HOTKEY_SETTINGS.");
+            if (input::parse_vk(v))
+                out = v;
+            else
+                warn.push_back(std::string("HOTKEY_SETTINGS.") + key + " '" + v + "' is not a key, using " + out);
+        }
+
     }
+
     Config& Config::getInstance() {
         static Config instance;
         return instance;
     }
 
-    void Config::loadFromFile(const std::filesystem::path& path) {
-        if (!std::filesystem::exists(path)) {
-            throw ConfigException("Config file not found: " + path.string());
+    int noteNameToMidi(std::string_view name) {
+        static constexpr int pcs[7] = { 9, 11, 0, 2, 4, 5, 7 };
+        if (name.size() < 2)
+            return -1;
+        char l = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
+        if (l < 'A' || l > 'G')
+            return -1;
+        int pc = pcs[l - 'A'];
+        size_t i = 1;
+        if (name[i] == '#') { ++pc; ++i; }
+        else if (name[i] == 'b') { --pc; ++i; }
+        if (i >= name.size())
+            return -1;
+        bool neg = name[i] == '-';
+        if (neg && ++i >= name.size())
+            return -1;
+        int oct = 0;
+        for (; i < name.size(); ++i) {
+            if (name[i] < '0' || name[i] > '9')
+                return -1;
+            oct = oct * 10 + (name[i] - '0');
         }
-
-        try {
-            std::ifstream file(path);
-            json j;
-            file >> j;
-            from_json(j, *this);
-            validate();
-        }
-        catch (const json::exception& e) {
-            throw ConfigException("JSON parsing error: " + std::string(e.what()));
-        }
+        int n = ((neg ? -oct : oct) + 1) * 12 + pc;
+        return n >= 0 && n < 128 ? n : -1;
     }
 
-    void Config::saveToFile(const std::filesystem::path& path) const {
-        try {
-            json j;
-            to_json(j, *this);
-            std::ofstream file(path);
-            file << j.dump(4);
-        }
-        catch (const std::exception& e) {
-            throw ConfigException("Failed to save config: " + std::string(e.what()));
-        }
-    }
-
-    void Config::validate() const {
-        try {
-            midi.validate();
-            playback.validate();
-            volume.validate();
-            auto_transpose.validate();
-            hotkeys.validate();
-            autoplayer_timing.validate();
-            validateKeyMappings();
-        }
-        catch (const ConfigException& e) {
-            throw ConfigException("Configuration validation failed: " + std::string(e.what()));
-        }
-    }
-
-    void Config::validateKeyMappings() const {
-        if (key_mappings.find("LIMITED") == key_mappings.end())
-            throw ConfigException("Missing LIMITED key mappings");
-        if (key_mappings.find("FULL") == key_mappings.end())
-            throw ConfigException("Missing FULL key mappings");
-
-        for (const auto& [mode, mappings] : key_mappings) {
-            if (mappings.empty())
-                throw ConfigException("Empty key mappings for mode: " + mode);
-
-            for (const auto& [note, key] : mappings) {
-                if (note.empty() || key.empty())
-                    throw ConfigException("Invalid key mapping in mode " + mode);
-            }
-        }
+    std::string midiToNoteName(int note) {
+        static constexpr const char* names[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        if (note < 0 || note > 127)
+            return "?";
+        return std::string(names[note % 12]) + std::to_string(note / 12 - 1);
     }
 
     NoteHandlingMode Config::stringToNoteHandlingMode(const std::string& mode) {
-        static const std::map<std::string, NoteHandlingMode> mapping = {
-            {"FIFO", NoteHandlingMode::FIFO},
-            {"LIFO", NoteHandlingMode::LIFO},
-            {"NoHandling", NoteHandlingMode::NoHandling}
-        };
-
-        auto it = mapping.find(mode);
-        if (it == mapping.end())
-            throw ConfigException("Invalid note handling mode: " + mode);
-        return it->second;
+        std::string m = upper(mode);
+        if (m == "FIFO")
+            return NoteHandlingMode::FIFO;
+        if (m == "NOHANDLING")
+            return NoteHandlingMode::NoHandling;
+        if (m == "LIFO")
+            return NoteHandlingMode::LIFO;
+        throw ConfigException("Invalid note handling mode: " + mode);
     }
+
     std::string Config::noteHandlingModeToString(NoteHandlingMode mode) {
         switch (mode) {
         case NoteHandlingMode::FIFO: return "FIFO";
-        case NoteHandlingMode::LIFO: return "LIFO";
         case NoteHandlingMode::NoHandling: return "NoHandling";
-        default: throw ConfigException("Unknown note handling mode");
-        }
-    }
-
-    void to_json(json& j, const VolumeSettings& v) {
-        j = json{
-            {"MIN_VOLUME", v.MIN_VOLUME},
-            {"MAX_VOLUME", v.MAX_VOLUME},
-            {"INITIAL_VOLUME", v.INITIAL_VOLUME},
-            {"VOLUME_STEP", v.VOLUME_STEP},
-            {"ADJUSTMENT_INTERVAL_MS", v.ADJUSTMENT_INTERVAL_MS}
-        };
-    }
-
-    void from_json(const json& j, VolumeSettings& v) {
-        j.at("MIN_VOLUME").get_to(v.MIN_VOLUME);
-        j.at("MAX_VOLUME").get_to(v.MAX_VOLUME);
-        j.at("INITIAL_VOLUME").get_to(v.INITIAL_VOLUME);
-        j.at("VOLUME_STEP").get_to(v.VOLUME_STEP);
-        j.at("ADJUSTMENT_INTERVAL_MS").get_to(v.ADJUSTMENT_INTERVAL_MS);
-        v.validate();
-    }
-
-    void to_json(json& j, const AutoTranspose& at) {
-        j = json{
-            {"ENABLED", at.ENABLED},
-            {"TRANSPOSE_UP_KEY", at.TRANSPOSE_UP_KEY},
-            {"TRANSPOSE_DOWN_KEY", at.TRANSPOSE_DOWN_KEY}
-        };
-    }
-
-    void from_json(const json& j, AutoTranspose& at) {
-        j.at("ENABLED").get_to(at.ENABLED);
-        j.at("TRANSPOSE_UP_KEY").get_to(at.TRANSPOSE_UP_KEY);
-        j.at("TRANSPOSE_DOWN_KEY").get_to(at.TRANSPOSE_DOWN_KEY);
-    }
-
-    void to_json(json& j, const AutoplayerTimingAccuracy& a) {
-        j = json{
-            {"MAX_PASSES", a.MAX_PASSES},
-            {"MEASURE_SEC", a.MEASURE_SEC}
-        };
-    }
-
-    void from_json(const json& j, AutoplayerTimingAccuracy& a) {
-        j.at("MAX_PASSES").get_to(a.MAX_PASSES);
-        j.at("MEASURE_SEC").get_to(a.MEASURE_SEC);
-        a.validate();
-    }
-
-    void to_json(json& j, const MIDISettings& m) {
-        j = json{ {"DETECT_DRUMS", m.DETECT_DRUMS} };
-    }
-
-    void from_json(const json& j, MIDISettings& m) {
-        j.at("DETECT_DRUMS").get_to(m.DETECT_DRUMS);
-        m.validate();
-    }
-
-    void to_json(nlohmann::json& j, const UISettings& ui) {
-        j = nlohmann::json{ {"alwaysOnTop", ui.alwaysOnTop} };
-    }
-
-    void from_json(const nlohmann::json& j, UISettings& ui) {
-        j.at("alwaysOnTop").get_to(ui.alwaysOnTop);
-    }
-
-    void to_json(nlohmann::json& j, const HotkeySettings& h) {
-        j = nlohmann::json{
-            {"SUSTAIN_KEY", h.SUSTAIN_KEY},
-            {"VOLUME_UP_KEY", h.VOLUME_UP_KEY},
-            {"VOLUME_DOWN_KEY", h.VOLUME_DOWN_KEY},
-            {"PLAY_PAUSE_KEY", h.PLAY_PAUSE_KEY},
-            {"REWIND_KEY", h.REWIND_KEY},
-            {"SKIP_KEY", h.SKIP_KEY},
-            {"EMERGENCY_EXIT_KEY", h.EMERGENCY_EXIT_KEY}
-        };
-    }
-
-    void from_json(const nlohmann::json& j, HotkeySettings& h) {
-        j.at("SUSTAIN_KEY").get_to(h.SUSTAIN_KEY);
-        j.at("VOLUME_UP_KEY").get_to(h.VOLUME_UP_KEY);
-        j.at("VOLUME_DOWN_KEY").get_to(h.VOLUME_DOWN_KEY);
-        j.at("PLAY_PAUSE_KEY").get_to(h.PLAY_PAUSE_KEY);
-        j.at("REWIND_KEY").get_to(h.REWIND_KEY);
-        j.at("SKIP_KEY").get_to(h.SKIP_KEY);
-        j.at("EMERGENCY_EXIT_KEY").get_to(h.EMERGENCY_EXIT_KEY);
-        h.validate();
-    }
-    void to_json(json& j, const PlaybackSettings& p) {
-        j = json{
-            {"STACKED_NOTE_HANDLING_MODE", Config::noteHandlingModeToString(p.noteHandlingMode)},
-            {"CUSTOM_VELOCITY_CURVES", json::array()}
-        };
-
-        for (const auto& curve : p.customVelocityCurves) {
-            j["CUSTOM_VELOCITY_CURVES"].push_back({
-                {"name", curve.name},
-                {"values", curve.velocityValues}
-                });
-        }
-    }
-
-
-    void from_json(const json& j, PlaybackSettings& p) {
-        std::string mode = j.at("STACKED_NOTE_HANDLING_MODE").get<std::string>();
-        p.noteHandlingMode = Config::stringToNoteHandlingMode(mode);
-        //TODO: validate here probably too
-        if (j.contains("CUSTOM_VELOCITY_CURVES")) {
-            for (const auto& curveJson : j["CUSTOM_VELOCITY_CURVES"]) {
-                CustomVelocityCurve customCurve;
-                customCurve.name = curveJson["name"].get<std::string>();
-                customCurve.velocityValues = curveJson["values"].get<std::array<int, 32>>();
-                p.customVelocityCurves.push_back(customCurve);
-            }
-        }
-
-        p.validate();
-    }
-    void to_json(json& j, const Config& c) {
-        j = json{
-            {"VOLUME_SETTINGS", c.volume},
-            {"KEY_MAPPINGS", c.key_mappings},
-            {"AUTO_TRANSPOSE", c.auto_transpose},
-            {"HOTKEY_SETTINGS", c.hotkeys},
-            {"MIDI_SETTINGS", json{{"DETECT_DRUMS", c.midi.DETECT_DRUMS}}},
-            {"AUTOPLAYER_TIMING_ACCURACY", c.autoplayer_timing},
-            {"STACKED_NOTE_HANDLING_MODE", Config::noteHandlingModeToString(c.playback.noteHandlingMode)},
-            {"CUSTOM_VELOCITY_CURVES", json::array()},
-            {"PLAYLIST_FILES", c.playlistFiles},
-            {"UI_SETTINGS", c.ui}
-        };
-
-        for (const auto& curve : c.playback.customVelocityCurves) {
-            j["CUSTOM_VELOCITY_CURVES"].push_back({
-                {"name", curve.name},
-                {"values", curve.velocityValues}
-                });
-        }
-    }
-
-    void from_json(const json& j, Config& c) {
-        j.at("VOLUME_SETTINGS").get_to(c.volume);
-        j.at("KEY_MAPPINGS").get_to(c.key_mappings);
-        j.at("AUTO_TRANSPOSE").get_to(c.auto_transpose);
-        j.at("HOTKEY_SETTINGS").get_to(c.hotkeys);
-        j.at("MIDI_SETTINGS").at("DETECT_DRUMS").get_to(c.midi.DETECT_DRUMS);
-
-        if (j.contains("AUTOPLAYER_TIMING_ACCURACY")) {
-            j.at("AUTOPLAYER_TIMING_ACCURACY").get_to(c.autoplayer_timing);
-        }
-
-        if (j.contains("STACKED_NOTE_HANDLING_MODE")) {
-            std::string mode = j.at("STACKED_NOTE_HANDLING_MODE").get<std::string>();
-            c.playback.noteHandlingMode = Config::stringToNoteHandlingMode(mode);
-        }
-
-        if (j.contains("CUSTOM_VELOCITY_CURVES")) {
-            const auto& curves = j.at("CUSTOM_VELOCITY_CURVES");
-            c.playback.customVelocityCurves.clear();
-            for (const auto& curveJson : curves) {
-                CustomVelocityCurve customCurve;
-                customCurve.name = curveJson["name"].get<std::string>();
-                customCurve.velocityValues = curveJson["values"].get<std::array<int, 32>>();
-                c.playback.customVelocityCurves.push_back(customCurve);
-            }
-        }
-
-        if (j.contains("PLAYLIST_FILES") && j["PLAYLIST_FILES"].is_array()) {
-            c.playlistFiles.clear();
-            for (auto& item : j["PLAYLIST_FILES"]) {
-                c.playlistFiles.push_back(item.get<std::string>());
-            }
-        }
-
-        // Read UI settings
-        if (j.contains("UI_SETTINGS")) {
-            j.at("UI_SETTINGS").get_to(c.ui);
+        default: return "LIFO";
         }
     }
 
     void Config::setDefaults() {
-        // Volume settings
-        volume = {
-            10,     // MIN_VOLUME
-            200,    // MAX_VOLUME
-            100,    // INITIAL_VOLUME
-            10,     // VOLUME_STEP
-            50      // ADJUSTMENT_INTERVAL_MS
-        };
-        // AutoTranspose settings
-        auto_transpose = {
-            false,      // ENABLED
-            "VK_UP",    // TRANSPOSE_UP_KEY
-            "VK_DOWN"   // TRANSPOSE_DOWN_KEY
-        };
+        midi = {};
+        playback = {};
+        volume = {};
+        auto_transpose = {};
+        legit = {};
+        hotkeys = {};
+        ui = {};
+        playlistFiles.clear();
+        key_mappings.clear();
 
-        // Autoplayer timing accuracy settings
-        autoplayer_timing = {
-            20,     // MAX_PASSES 
-            1.0     // MEASURE_SEC
-        };
-
-        // MIDI settings
-        midi = { true }; // DETECT_DRUMS
-
-        // UI settings
-        ui = { true }; // alwaysOnTop
-
-        // Hotkey settings
-        hotkeys = {
-            "VK_SPACE",    // SUSTAIN_KEY
-            "VK_RIGHT",    // VOLUME_UP_KEY
-            "VK_LEFT",     // VOLUME_DOWN_KEY
-            "VK_F1",        // PLAY_PAUSE_KEY
-            "VK_F2",        // REWIND_KEY
-            "VK_F3",        // SKIP_KEY
-            "VK_F4"    // EMERGENCY_EXIT_KEY
-        };
-
-        // Setup default LIMITED key mappings
         key_mappings["LIMITED"] = {
             {"C2", "1"}, {"C#2", "!"}, {"D2", "2"}, {"D#2", "@"}, {"E2", "3"},
             {"F2", "4"}, {"F#2", "$"}, {"G2", "5"}, {"G#2", "%"}, {"A2", "6"},
@@ -385,31 +162,315 @@ namespace midi {
             {"C7", "m"}
         };
 
-        // Setup default FULL key mappings with lower octaves
         key_mappings["FULL"] = {
             {"A0", "ctrl+1"}, {"A#0", "ctrl+2"}, {"B0", "ctrl+3"},
             {"C1", "ctrl+4"}, {"C#1", "ctrl+5"}, {"D1", "ctrl+6"},
             {"D#1", "ctrl+7"}, {"E1", "ctrl+8"}, {"F1", "ctrl+9"},
             {"F#1", "ctrl+0"}, {"G1", "ctrl+q"}, {"G#1", "ctrl+w"},
-            {"A1", "ctrl+e"}, {"A#1", "ctrl+r"}, {"B1", "ctrl+t"}
-        };
-
-        // Copy all LIMITED mappings to FULL
-        for (const auto& [note, key] : key_mappings["LIMITED"]) {
-            key_mappings["FULL"][note] = key;
-        }
-
-        // Add higher octaves to FULL mapping
-        std::map<std::string, std::string> high_notes = {
+            {"A1", "ctrl+e"}, {"A#1", "ctrl+r"}, {"B1", "ctrl+t"},
             {"C#7", "ctrl+y"}, {"D7", "ctrl+u"}, {"D#7", "ctrl+i"}, {"E7", "ctrl+o"},
             {"F7", "ctrl+p"}, {"F#7", "ctrl+a"}, {"G7", "ctrl+s"}, {"G#7", "ctrl+d"},
             {"A7", "ctrl+f"}, {"A#7", "ctrl+g"}, {"B7", "ctrl+h"}, {"C8", "ctrl+j"}
         };
-
-        for (const auto& [note, key] : high_notes) {
+        for (const auto& [note, key] : key_mappings["LIMITED"])
             key_mappings["FULL"][note] = key;
+    }
+
+    std::vector<std::string> Config::loadFromFile(const std::filesystem::path& path) {
+        Warnings warn;
+        setDefaults();
+        raw_ = json::object();
+
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            warn.push_back("config.json not found, wrote a fresh one");
+            return warn;
         }
-        validate();
+        json j = json::parse(file, nullptr, false, true);
+        file.close();
+        if (j.is_discarded() || !j.is_object()) {
+            std::error_code ec;
+            std::filesystem::path bad = path;
+            bad.replace_filename("config.broken.json");
+            std::filesystem::rename(path, bad, ec);
+            warn.push_back("config.json could not be read, moved it to config.broken.json and used the defaults");
+            return warn;
+        }
+        raw_ = j;
+
+        auto section = [&](const char* name) -> const json& {
+            static const json empty = json::object();
+            auto it = j.find(name);
+            if (it == j.end())
+                return empty;
+            if (!it->is_object()) {
+                warn.push_back(std::string(name) + " is not an object, using the defaults");
+                return empty;
+            }
+            return *it;
+        };
+
+        {
+            const json& s = section("VOLUME_SETTINGS");
+            const std::string w = "VOLUME_SETTINGS.";
+            pick(s, "MIN_VOLUME", volume.MIN_VOLUME, warn, w);
+            pick(s, "MAX_VOLUME", volume.MAX_VOLUME, warn, w);
+            pick(s, "INITIAL_VOLUME", volume.INITIAL_VOLUME, warn, w);
+            pick(s, "VOLUME_STEP", volume.VOLUME_STEP, warn, w);
+            pick(s, "ADJUSTMENT_INTERVAL_MS", volume.ADJUSTMENT_INTERVAL_MS, warn, w);
+            clamp_to(volume.MAX_VOLUME, 0, 200, "MAX_VOLUME", warn, w);
+            clamp_to(volume.MIN_VOLUME, 0, volume.MAX_VOLUME, "MIN_VOLUME", warn, w);
+            clamp_to(volume.INITIAL_VOLUME, volume.MIN_VOLUME, volume.MAX_VOLUME, "INITIAL_VOLUME", warn, w);
+            clamp_to(volume.VOLUME_STEP, 1, 200, "VOLUME_STEP", warn, w);
+            clamp_to(volume.ADJUSTMENT_INTERVAL_MS, 0, 10000, "ADJUSTMENT_INTERVAL_MS", warn, w);
+        }
+
+        {
+            const json& s = section("AUTO_TRANSPOSE");
+            pick(s, "ENABLED", auto_transpose.ENABLED, warn, "AUTO_TRANSPOSE.");
+            std::string up = auto_transpose.TRANSPOSE_UP_KEY, down = auto_transpose.TRANSPOSE_DOWN_KEY;
+            pick(s, "TRANSPOSE_UP_KEY", up, warn, "AUTO_TRANSPOSE.");
+            pick(s, "TRANSPOSE_DOWN_KEY", down, warn, "AUTO_TRANSPOSE.");
+            if (input::parse_vk(up)) auto_transpose.TRANSPOSE_UP_KEY = up;
+            else warn.push_back("AUTO_TRANSPOSE.TRANSPOSE_UP_KEY '" + up + "' is not a key");
+            if (input::parse_vk(down)) auto_transpose.TRANSPOSE_DOWN_KEY = down;
+            else warn.push_back("AUTO_TRANSPOSE.TRANSPOSE_DOWN_KEY '" + down + "' is not a key");
+        }
+
+        {
+            const json& s = section("LEGIT_MODE_SETTINGS");
+            const std::string w = "LEGIT_MODE_SETTINGS.";
+            pick(s, "ENABLED", legit.ENABLED, warn, w);
+            pick(s, "TIMING_VARIATION", legit.TIMING_VARIATION, warn, w);
+            pick(s, "NOTE_SKIP_CHANCE", legit.NOTE_SKIP_CHANCE, warn, w);
+            pick(s, "EXTRA_DELAY_CHANCE", legit.EXTRA_DELAY_CHANCE, warn, w);
+            pick(s, "EXTRA_DELAY_MIN", legit.EXTRA_DELAY_MIN, warn, w);
+            pick(s, "EXTRA_DELAY_MAX", legit.EXTRA_DELAY_MAX, warn, w);
+            clamp_to(legit.TIMING_VARIATION, 0.0, 1.0, "TIMING_VARIATION", warn, w);
+            clamp_to(legit.NOTE_SKIP_CHANCE, 0.0, 1.0, "NOTE_SKIP_CHANCE", warn, w);
+            clamp_to(legit.EXTRA_DELAY_CHANCE, 0.0, 1.0, "EXTRA_DELAY_CHANCE", warn, w);
+            clamp_to(legit.EXTRA_DELAY_MIN, 0.0, 10.0, "EXTRA_DELAY_MIN", warn, w);
+            clamp_to(legit.EXTRA_DELAY_MAX, 0.0, 10.0, "EXTRA_DELAY_MAX", warn, w);
+            if (legit.EXTRA_DELAY_MAX < legit.EXTRA_DELAY_MIN)
+                std::swap(legit.EXTRA_DELAY_MIN, legit.EXTRA_DELAY_MAX);
+        }
+
+        {
+            const json& s = section("MIDI_SETTINGS");
+            const std::string w = "MIDI_SETTINGS.";
+            std::string wait = waitName(midi.liveWait);
+            pick(s, "DETECT_DRUMS", midi.DETECT_DRUMS, warn, w);
+            pick(s, "KERNEL_STREAMING", midi.kernelStreaming, warn, w);
+            pick(s, "LIVE_WAIT_MODE", wait, warn, w);
+            wait = upper(wait);
+            midi.liveWait = wait == "SPIN" ? LiveWait::Spin : wait == "SPIN_THEN_BLOCK" ? LiveWait::SpinThenBlock : LiveWait::Block;
+        }
+
+        {
+            const json& s = section("HOTKEY_SETTINGS");
+            hotkey(s, "SUSTAIN_KEY", hotkeys.SUSTAIN_KEY, warn);
+            hotkey(s, "VOLUME_UP_KEY", hotkeys.VOLUME_UP_KEY, warn);
+            hotkey(s, "VOLUME_DOWN_KEY", hotkeys.VOLUME_DOWN_KEY, warn);
+            hotkey(s, "PLAY_PAUSE_KEY", hotkeys.PLAY_PAUSE_KEY, warn);
+            hotkey(s, "REWIND_KEY", hotkeys.REWIND_KEY, warn);
+            hotkey(s, "SKIP_KEY", hotkeys.SKIP_KEY, warn);
+            hotkey(s, "EMERGENCY_EXIT_KEY", hotkeys.EMERGENCY_EXIT_KEY, warn);
+        }
+
+        if (auto it = j.find("STACKED_NOTE_HANDLING_MODE"); it != j.end()) {
+            try {
+                playback.noteHandlingMode = stringToNoteHandlingMode(it->get<std::string>());
+            }
+            catch (const std::exception&) {
+                warn.push_back("STACKED_NOTE_HANDLING_MODE must be FIFO, LIFO or NoHandling, using LIFO");
+            }
+        }
+
+        if (auto it = j.find("CUSTOM_VELOCITY_CURVES"); it != j.end() && it->is_array()) {
+            for (const json& c : *it) {
+                CustomVelocityCurve curve;
+                if (!c.is_object() || !c.contains("name") || !c["name"].is_string() || !c.contains("values")) {
+                    warn.push_back("CUSTOM_VELOCITY_CURVES has a curve without a name or values, skipped it");
+                    continue;
+                }
+                curve.name = c["name"].get<std::string>();
+                const json& v = c["values"];
+                if (curve.name.empty() || !v.is_array() || v.size() != 32) {
+                    warn.push_back("velocity curve '" + curve.name + "' needs a name and 32 values, skipped it");
+                    continue;
+                }
+                bool ok = true;
+                for (size_t i = 0; i < 32 && ok; ++i) {
+                    if (!v[i].is_number()) {
+                        ok = false;
+                        break;
+                    }
+                    curve.velocityValues[i] = std::clamp(v[i].get<int>(), 0, 127);
+                }
+                if (ok)
+                    playback.customVelocityCurves.push_back(std::move(curve));
+                else
+                    warn.push_back("velocity curve '" + curve.name + "' has a value that is not a number, skipped it");
+            }
+        }
+
+        {
+            const json& s = section("PLAYBACK_SETTINGS");
+            const std::string w = "PLAYBACK_SETTINGS.";
+            std::string output = playback.output == OutputMode::MidiConnect ? "MIDICONNECT" : "KEYS";
+            std::string sustain = sustainName(playback.sustain);
+            pick(s, "OUTPUT", output, warn, w);
+            pick(s, "88_KEYS", playback.keys88, warn, w);
+            pick(s, "VELOCITY_KEYS", playback.velocityKeys, warn, w);
+            pick(s, "VELOCITY_CURVE", playback.velocityCurveIndex, warn, w);
+            pick(s, "OUT_OF_RANGE_TRANSPOSE", playback.outOfRange, warn, w);
+            pick(s, "SUSTAIN_MODE", sustain, warn, w);
+            pick(s, "SUSTAIN_CUTOFF", playback.sustainCutoff, warn, w);
+            pick(s, "GAME_WINDOW_ONLY", playback.gameWindowOnly, warn, w);
+            pick(s, "KEY_BATCHING_MS", playback.batchMs, warn, w);
+            pick(s, "TYPED_KEYS", playback.typedKeys, warn, w);
+            output = upper(output);
+            sustain = upper(sustain);
+            playback.output = output == "MIDICONNECT" ? OutputMode::MidiConnect : OutputMode::Keys;
+            playback.sustain = sustain == "DOWN" ? SustainMode::Down : sustain == "UP" ? SustainMode::Up : SustainMode::Ignore;
+            clamp_to(playback.sustainCutoff, 0, 127, "SUSTAIN_CUTOFF", warn, w);
+            clamp_to(playback.batchMs, -1, 50, "KEY_BATCHING_MS", warn, w);
+            int curves = 5 + static_cast<int>(playback.customVelocityCurves.size());
+            clamp_to(playback.velocityCurveIndex, 0, curves - 1, "VELOCITY_CURVE", warn, w);
+            playback.velocityCurve = playback.velocityCurveIndex < 5
+                ? static_cast<VelocityCurveType>(playback.velocityCurveIndex) : VelocityCurveType::Custom;
+        }
+
+        {
+            const json& s = section("UI_SETTINGS");
+            const std::string w = "UI_SETTINGS.";
+            pick(s, "alwaysOnTop", ui.alwaysOnTop, warn, w);
+            pick(s, "opacity", ui.opacity, warn, w);
+            pick(s, "sortMode", ui.sortMode, warn, w);
+            pick(s, "midiDevice", ui.midiDevice, warn, w);
+            pick(s, "midiChannel", ui.midiChannel, warn, w);
+            pick(s, "darkMode", ui.darkMode, warn, w);
+            clamp_to(ui.opacity, 100, 255, "opacity", warn, w);
+            clamp_to(ui.sortMode, 0, 3, "sortMode", warn, w);
+            clamp_to(ui.midiChannel, -1, 15, "midiChannel", warn, w);
+            clamp_to(ui.darkMode, -1, 1, "darkMode", warn, w);
+        }
+
+        if (auto it = j.find("PLAYLIST_FILES"); it != j.end() && it->is_array())
+            for (const json& f : *it)
+                if (f.is_string())
+                    playlistFiles.push_back(f.get<std::string>());
+
+        if (auto it = j.find("KEY_MAPPINGS"); it != j.end()) {
+            if (!it->is_object()) {
+                warn.push_back("KEY_MAPPINGS is not an object, using the default keys");
+            }
+            else {
+                for (const auto& [mode, m] : it->items()) {
+                    if (!m.is_object()) {
+                        warn.push_back("KEY_MAPPINGS." + mode + " is not an object, skipped it");
+                        continue;
+                    }
+                    std::map<std::string, std::string> keys;
+                    for (const auto& [note, key] : m.items()) {
+                        if (!key.is_string() || noteNameToMidi(note) < 0) {
+                            warn.push_back("KEY_MAPPINGS." + mode + "." + note + " is not a note to key mapping, skipped it");
+                            continue;
+                        }
+                        std::string k = key.get<std::string>();
+                        if (!input::parse_key(k))
+                            warn.push_back("KEY_MAPPINGS." + mode + "." + note + " uses '" + k + "', which is not a key");
+                        keys[note] = std::move(k);
+                    }
+                    if (keys.empty())
+                        warn.push_back("KEY_MAPPINGS." + mode + " is empty, using the default keys");
+                    else
+                        key_mappings[mode] = std::move(keys);
+                }
+            }
+        }
+
+        return warn;
+    }
+
+    void Config::saveToFile(const std::filesystem::path& path) const {
+        json j = raw_.is_object() ? raw_ : json::object();
+        j.erase("AUTOPLAYER_TIMING_ACCURACY");
+
+        j["VOLUME_SETTINGS"] = {
+            {"MIN_VOLUME", volume.MIN_VOLUME},
+            {"MAX_VOLUME", volume.MAX_VOLUME},
+            {"INITIAL_VOLUME", volume.INITIAL_VOLUME},
+            {"VOLUME_STEP", volume.VOLUME_STEP},
+            {"ADJUSTMENT_INTERVAL_MS", volume.ADJUSTMENT_INTERVAL_MS}
+        };
+        j["AUTO_TRANSPOSE"] = {
+            {"ENABLED", auto_transpose.ENABLED},
+            {"TRANSPOSE_UP_KEY", auto_transpose.TRANSPOSE_UP_KEY},
+            {"TRANSPOSE_DOWN_KEY", auto_transpose.TRANSPOSE_DOWN_KEY}
+        };
+        j["LEGIT_MODE_SETTINGS"] = {
+            {"ENABLED", legit.ENABLED},
+            {"TIMING_VARIATION", legit.TIMING_VARIATION},
+            {"NOTE_SKIP_CHANCE", legit.NOTE_SKIP_CHANCE},
+            {"EXTRA_DELAY_CHANCE", legit.EXTRA_DELAY_CHANCE},
+            {"EXTRA_DELAY_MIN", legit.EXTRA_DELAY_MIN},
+            {"EXTRA_DELAY_MAX", legit.EXTRA_DELAY_MAX}
+        };
+        j["MIDI_SETTINGS"] = {
+            {"DETECT_DRUMS", midi.DETECT_DRUMS},
+            {"KERNEL_STREAMING", midi.kernelStreaming},
+            {"LIVE_WAIT_MODE", waitName(midi.liveWait)}
+        };
+        j["HOTKEY_SETTINGS"] = {
+            {"SUSTAIN_KEY", hotkeys.SUSTAIN_KEY},
+            {"VOLUME_UP_KEY", hotkeys.VOLUME_UP_KEY},
+            {"VOLUME_DOWN_KEY", hotkeys.VOLUME_DOWN_KEY},
+            {"PLAY_PAUSE_KEY", hotkeys.PLAY_PAUSE_KEY},
+            {"REWIND_KEY", hotkeys.REWIND_KEY},
+            {"SKIP_KEY", hotkeys.SKIP_KEY},
+            {"EMERGENCY_EXIT_KEY", hotkeys.EMERGENCY_EXIT_KEY}
+        };
+        j["STACKED_NOTE_HANDLING_MODE"] = noteHandlingModeToString(playback.noteHandlingMode);
+        j["CUSTOM_VELOCITY_CURVES"] = json::array();
+        for (const auto& c : playback.customVelocityCurves)
+            j["CUSTOM_VELOCITY_CURVES"].push_back({ {"name", c.name}, {"values", c.velocityValues} });
+        j["PLAYBACK_SETTINGS"] = {
+            {"OUTPUT", playback.output == OutputMode::MidiConnect ? "MIDICONNECT" : "KEYS"},
+            {"88_KEYS", playback.keys88},
+            {"VELOCITY_KEYS", playback.velocityKeys},
+            {"VELOCITY_CURVE", playback.velocityCurveIndex},
+            {"OUT_OF_RANGE_TRANSPOSE", playback.outOfRange},
+            {"SUSTAIN_MODE", sustainName(playback.sustain)},
+            {"SUSTAIN_CUTOFF", playback.sustainCutoff},
+            {"GAME_WINDOW_ONLY", playback.gameWindowOnly},
+            {"KEY_BATCHING_MS", playback.batchMs},
+            {"TYPED_KEYS", playback.typedKeys}
+        };
+        j["UI_SETTINGS"] = {
+            {"alwaysOnTop", ui.alwaysOnTop},
+            {"opacity", ui.opacity},
+            {"sortMode", ui.sortMode},
+            {"midiDevice", ui.midiDevice},
+            {"midiChannel", ui.midiChannel},
+            {"darkMode", ui.darkMode}
+        };
+        j["PLAYLIST_FILES"] = playlistFiles;
+        j["KEY_MAPPINGS"] = key_mappings;
+
+        std::string data = j.dump(4);
+        std::filesystem::path tmp = path;
+        tmp += L".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            if (!f || !f.write(data.data(), static_cast<std::streamsize>(data.size())))
+                throw ConfigException("could not write config.json");
+        }
+        if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            throw ConfigException("could not replace config.json");
+        }
     }
 
 }

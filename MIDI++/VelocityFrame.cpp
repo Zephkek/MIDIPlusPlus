@@ -1,6 +1,9 @@
-﻿#include "PlaybackSystem.hpp"
+#include "config.hpp"
 #include "VelocityCurveEditor.hpp"
+#include "Output.hpp"
+#include "Widgets.hpp"
 #include <cmath>
+#include <cfloat>
 #include <algorithm>
 #include <vector>
 #include <memory>
@@ -10,167 +13,159 @@
 #include <windowsx.h>
 #pragma comment(lib, "Gdiplus.lib")
 
-constexpr int POINT_COUNT = 33;     // number of control points
-constexpr int MAX_VELOCITY = 127;
-constexpr int HIT_RADIUS = 6;      // radius (in pixels) for hit detection
+namespace {
 
-// Grid margins and positions
-constexpr int GRID_LEFT_MARGIN = 50;
-constexpr int GRID_RIGHT_MARGIN = 20;
-constexpr int GRID_TOP = 20;
-constexpr int GRID_BOTTOM = 220;    // bottom of grid (vertical pixel coordinate)
+    constexpr char kVelocityKeys[] = "1234567890qwertyuiopasdfghjklzxc";
 
-// Editor window and control sizes
-constexpr int EDITOR_WIDTH = 500;
-constexpr int EDITOR_HEIGHT = 350;
-constexpr int TOP_MARGIN = 10;
-constexpr int NAME_FIELD_WIDTH = 150;
-constexpr int TOP_CONTROL_HEIGHT = 30;
-constexpr int INFO_FIELD_WIDTH = 250;
-constexpr int BUTTON_WIDTH = 70;
-constexpr int BUTTON_HEIGHT = 30;
-constexpr int BUTTON_GAP = 10;
-constexpr int BUTTONS_TOP = 280;
-constexpr int MARGIN = 10;
-constexpr int GRID_TOGGLE_WIDTH = 60;
-constexpr int INFO_FONT_SIZE = 20;
-constexpr int LARGE_FONT_SIZE = 22;
+    Gdiplus::Color tone(COLORREF c, int alpha = 255) {
+        return Gdiplus::Color(static_cast<BYTE>(std::clamp(alpha, 0, 255)), GetRValue(c), GetGValue(c), GetBValue(c));
+    }
 
-//------------------------------------------------------------------------------
-// Helper function to create a font (wrapper around CreateFontIndirectW)
-HFONT CreateCustomFont(int height, int weight = FW_NORMAL, LPCWSTR faceName = L"Segoe UI")
-{
-    LOGFONTW lf = {};
-    lf.lfHeight = height;
-    lf.lfWeight = weight;
-    wcscpy_s(lf.lfFaceName, faceName);
-    return CreateFontIndirectW(&lf);
+    int window_dpi(HWND hwnd) {
+        using Fn = UINT(WINAPI*)(HWND);
+        static auto fn = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+        UINT d = fn && hwnd ? fn(hwnd) : 0;
+        return d ? static_cast<int>(d) : 96;
+    }
+
+    void adjust_rect(RECT& r, DWORD style, DWORD ex, int dpi) {
+        using Fn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+        static auto fn = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "AdjustWindowRectExForDpi"));
+        if (!fn || !fn(&r, style, FALSE, ex, static_cast<UINT>(dpi)))
+            AdjustWindowRectEx(&r, style, FALSE, ex);
+    }
+
+    std::wstring widen(const std::string& s) {
+        if (s.empty())
+            return {};
+        int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+        std::wstring w(static_cast<size_t>(n), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+        return w;
+    }
+
 }
 
 //------------------------------------------------------------------------------
 // VelocityCurveEditor implementation
 
-std::unique_ptr<VelocityCurveEditor> g_curveEditor;
-
 VelocityCurveEditor::VelocityCurveEditor() :
     hwndEditor(nullptr),
     hwndParent(nullptr),
     hwndCurveName(nullptr),
-    hwndVelocityInfo(nullptr),
-    hwndStepInfo(nullptr),
     hwndGridlines(nullptr),
     points(POINT_COUNT),
     isDragging(false),
     selectedPoint(-1),
     hoveredPoint(-1),
-    lastMouseX(-1),
-    lastMouseY(-1),
-    hInfoFont(nullptr),
-    hLargeFont(nullptr),
+    dpi(96),
     showGridlines(true),
+    tracking(false),
     currentPreset("Linear"),
-    isAltKeyDown(false),
-    isBeingDestroyed(false)
+    fieldBrush(nullptr)
 {
     ResetToLinear();
 }
 
 void VelocityCurveEditor::DrawGrid(Gdiplus::Graphics& graphics, const RECT& rect) {
+    const ui::Palette& p = ui::pal();
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-    const Gdiplus::Color gridColor(70, 180, 180, 180);      // major grid lines
-    const Gdiplus::Color minorGridColor(40, 180, 180, 180);   // minor grid lines
-    const Gdiplus::Color borderColor(140, 60, 60, 60);
-    const Gdiplus::Color textColor(255, 45, 45, 45);
+    const Gdiplus::Color gridColor = tone(p.border);      // major grid lines
+    const Gdiplus::Color minorGridColor = tone(p.grid);   // minor grid lines
+    const Gdiplus::Color borderColor = tone(p.buttonBorder);
+    const Gdiplus::Color textColor = tone(p.subtext);
     Gdiplus::Pen gridPen(gridColor, 1);
     Gdiplus::Pen minorGridPen(minorGridColor, 1);
-    Gdiplus::Pen borderPen(borderColor, 2);
+    Gdiplus::Pen borderPen(borderColor, 1);
     Gdiplus::SolidBrush textBrush(textColor);
+    Gdiplus::SolidBrush labelTextBrush(tone(p.text));
     Gdiplus::FontFamily fontFamily(L"Segoe UI");
-    Gdiplus::Font axisFont(&fontFamily, 9, Gdiplus::FontStyleRegular);
-    Gdiplus::Font labelFont(&fontFamily, 11, Gdiplus::FontStyleBold);
+    Gdiplus::Font axisFont(&fontFamily, static_cast<Gdiplus::REAL>(S(11)), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    Gdiplus::Font labelFont(&fontFamily, static_cast<Gdiplus::REAL>(S(12)), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
 
-    const Gdiplus::REAL gridWidth = rect.right - GRID_LEFT_MARGIN - GRID_RIGHT_MARGIN;
-    const Gdiplus::REAL gridHeight = GRID_BOTTOM - GRID_TOP;
+    const Gdiplus::REAL gridLeft = static_cast<Gdiplus::REAL>(S(GRID_LEFT_MARGIN));
+    const Gdiplus::REAL gridRight = static_cast<Gdiplus::REAL>(rect.right - S(GRID_RIGHT_MARGIN));
+    const Gdiplus::REAL gridTop = static_cast<Gdiplus::REAL>(S(GRID_TOP));
+    const Gdiplus::REAL gridBottom = static_cast<Gdiplus::REAL>(S(GRID_BOTTOM));
+    const Gdiplus::REAL gridWidth = gridRight - gridLeft;
+    const Gdiplus::REAL gridHeight = gridBottom - gridTop;
 
-    Gdiplus::SolidBrush gridBgBrush(Gdiplus::Color(255, 255, 255, 255));
-    Gdiplus::RectF gridRectF(GRID_LEFT_MARGIN, GRID_TOP, gridWidth, gridHeight);
+    Gdiplus::SolidBrush gridBgBrush(tone(p.field));
+    Gdiplus::RectF gridRectF(gridLeft, gridTop, gridWidth, gridHeight);
     graphics.FillRectangle(&gridBgBrush, gridRectF);
 
-    for (int i = 0; i <= POINT_COUNT; i++) {
-        Gdiplus::REAL x = MapIndexToX(i, rect);
-        graphics.DrawLine(&minorGridPen, x, static_cast<Gdiplus::REAL>(GRID_TOP), x, static_cast<Gdiplus::REAL>(GRID_BOTTOM));
-    }
-    // Draw minor horizontal grid lines (every 8 velocity units)
-    for (int v = 0; v <= MAX_VELOCITY; v += 8) {
-        Gdiplus::REAL y = MapVelocityToY(v, rect);
-        graphics.DrawLine(&minorGridPen, GRID_LEFT_MARGIN, y, static_cast<Gdiplus::REAL>(rect.right - GRID_RIGHT_MARGIN), y);
-    }
-    // Draw major vertical grid lines (every 4 points)
-    for (int i = 0; i <= POINT_COUNT; i += 4) {
-        Gdiplus::REAL x = MapIndexToX(i, rect);
-        graphics.DrawLine(&gridPen, x, static_cast<Gdiplus::REAL>(GRID_TOP), x, static_cast<Gdiplus::REAL>(GRID_BOTTOM));
-    }
-    // Draw major horizontal grid lines (every 16 velocity units)
-    for (int v = 0; v <= MAX_VELOCITY; v += 16) {
-        Gdiplus::REAL y = MapVelocityToY(v, rect);
-        graphics.DrawLine(&gridPen, GRID_LEFT_MARGIN, y, static_cast<Gdiplus::REAL>(rect.right - GRID_RIGHT_MARGIN), y);
+    if (showGridlines) {
+        for (int i = 0; i < POINT_COUNT; i++) {
+            Gdiplus::REAL x = MapIndexToX(i, rect);
+            graphics.DrawLine(&minorGridPen, x, gridTop, x, gridBottom);
+        }
+        // Draw minor horizontal grid lines (every 8 velocity units)
+        for (int v = 0; v <= MAX_VELOCITY; v += 8) {
+            Gdiplus::REAL y = MapVelocityToY(v, rect);
+            graphics.DrawLine(&minorGridPen, gridLeft, y, gridRight, y);
+        }
+        // Draw major vertical grid lines (every 4 points)
+        for (int i = 0; i < POINT_COUNT; i += 4) {
+            Gdiplus::REAL x = MapIndexToX(i, rect);
+            graphics.DrawLine(&gridPen, x, gridTop, x, gridBottom);
+        }
+        // Draw major horizontal grid lines (every 16 velocity units)
+        for (int v = 0; v <= MAX_VELOCITY; v += 16) {
+            Gdiplus::REAL y = MapVelocityToY(v, rect);
+            graphics.DrawLine(&gridPen, gridLeft, y, gridRight, y);
+        }
     }
 
+    Gdiplus::StringFormat centerFormat;
+    centerFormat.SetAlignment(Gdiplus::StringAlignmentCenter);
+    Gdiplus::StringFormat rightFormat;
+    rightFormat.SetAlignment(Gdiplus::StringAlignmentFar);
+    rightFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+
     // Draw step labels (every 4 steps)
-    for (int i = 0; i <= POINT_COUNT - 1; i += 4) {
+    for (int i = 0; i < POINT_COUNT; i += 4) {
         Gdiplus::REAL x = MapIndexToX(i, rect);
         wchar_t label[8];
-        swprintf_s(label, L"%d", i);
-        Gdiplus::RectF labelRect;
-        graphics.MeasureString(label, -1, &axisFont, Gdiplus::PointF(0, 0), &labelRect);
-        Gdiplus::PointF labelPos(x - labelRect.Width / 2, static_cast<Gdiplus::REAL>(GRID_BOTTOM + 5));
-        graphics.DrawString(label, -1, &axisFont, labelPos, &textBrush);
+        swprintf_s(label, L"%d", i + 1);
+        graphics.DrawString(label, -1, &axisFont, Gdiplus::RectF(x - S(20), gridBottom + S(5), static_cast<Gdiplus::REAL>(S(40)), static_cast<Gdiplus::REAL>(S(16))),
+            &centerFormat, &textBrush);
+    }
+    {
+        Gdiplus::REAL finalX = MapIndexToX(POINT_COUNT - 1, rect);
+        graphics.DrawString(L"32", -1, &axisFont, Gdiplus::RectF(finalX - S(20), gridBottom + S(5), static_cast<Gdiplus::REAL>(S(40)), static_cast<Gdiplus::REAL>(S(16))),
+            &centerFormat, &textBrush);
     }
     for (int v = 0; v <= MAX_VELOCITY; v += 16) {
         Gdiplus::REAL y = MapVelocityToY(v, rect);
         wchar_t label[8];
         swprintf_s(label, L"%d", v);
-        Gdiplus::PointF labelPos(GRID_LEFT_MARGIN - 30, y - 6);
-        graphics.DrawString(label, -1, &axisFont, labelPos, &textBrush);
+        graphics.DrawString(label, -1, &axisFont, Gdiplus::RectF(gridLeft - S(40), y - S(8), static_cast<Gdiplus::REAL>(S(34)), static_cast<Gdiplus::REAL>(S(16))),
+            &rightFormat, &textBrush);
     }
     {
-        Gdiplus::REAL finalX = MapIndexToX(POINT_COUNT - 1, rect);
-        wchar_t finalStepLabel[8];
-        swprintf_s(finalStepLabel, L"32");
-        Gdiplus::RectF finalStepRect;
-        graphics.MeasureString(finalStepLabel, -1, &axisFont, Gdiplus::PointF(0, 0), &finalStepRect);
-        graphics.DrawString(finalStepLabel, -1, &axisFont,
-            Gdiplus::PointF(finalX - finalStepRect.Width / 2, static_cast<Gdiplus::REAL>(GRID_BOTTOM + 5)),
-            &textBrush);
-
         Gdiplus::REAL finalY = MapVelocityToY(MAX_VELOCITY, rect);
-        wchar_t finalVelLabel[8];
-        swprintf_s(finalVelLabel, L"127");
-        graphics.DrawString(finalVelLabel, -1, &axisFont,
-            Gdiplus::PointF(GRID_LEFT_MARGIN - 30, finalY - 6),
-            &textBrush);
+        graphics.DrawString(L"127", -1, &axisFont, Gdiplus::RectF(gridLeft - S(40), finalY - S(8), static_cast<Gdiplus::REAL>(S(34)), static_cast<Gdiplus::REAL>(S(16))),
+            &rightFormat, &textBrush);
     }
 
     graphics.DrawRectangle(&borderPen, gridRectF);
 
-    Gdiplus::StringFormat centerFormat;
-    centerFormat.SetAlignment(Gdiplus::StringAlignmentCenter);
-
-    graphics.TranslateTransform(30, GRID_TOP + gridHeight / 2);
+    graphics.TranslateTransform(static_cast<Gdiplus::REAL>(S(16)), gridTop + gridHeight / 2);
     graphics.RotateTransform(-90);
-    graphics.DrawString(L"Velocity", -1, &labelFont, Gdiplus::PointF(0, -20), &centerFormat, &textBrush);
+    graphics.DrawString(L"Velocity", -1, &labelFont, Gdiplus::PointF(0, static_cast<Gdiplus::REAL>(-S(8))), &centerFormat, &labelTextBrush);
     graphics.ResetTransform();
 
     // X-axis label
     graphics.DrawString(L"Step", -1, &labelFont,
-        Gdiplus::RectF(GRID_LEFT_MARGIN, static_cast<Gdiplus::REAL>(GRID_BOTTOM + 25), gridWidth, 20),
-        &centerFormat, &textBrush);
+        Gdiplus::RectF(gridLeft, gridBottom + S(21), gridWidth, static_cast<Gdiplus::REAL>(S(18))),
+        &centerFormat, &labelTextBrush);
 }
 
 void VelocityCurveEditor::DrawCurve(Gdiplus::Graphics& graphics, const RECT& rect) {
-    const Gdiplus::Color curveColor(255, 30, 170, 220);
-    const Gdiplus::Color fillColor(40, 30, 170, 220);
+    const Gdiplus::Color curveColor = tone(ui::pal().accent);
+    const Gdiplus::Color fillColor = tone(ui::pal().accent, 40);
+    const float k = dpi / 96.0f;
     std::vector<Gdiplus::PointF> curvePoints;
     curvePoints.reserve(POINT_COUNT);
     for (int i = 0; i < POINT_COUNT; i++) {
@@ -178,19 +173,19 @@ void VelocityCurveEditor::DrawCurve(Gdiplus::Graphics& graphics, const RECT& rec
     }
     Gdiplus::GraphicsPath fillPath;
     std::vector<Gdiplus::PointF> fillPoints = curvePoints;
-    fillPoints.push_back(Gdiplus::PointF(MapIndexToX(POINT_COUNT - 1, rect), static_cast<Gdiplus::REAL>(GRID_BOTTOM)));
-    fillPoints.push_back(Gdiplus::PointF(MapIndexToX(0, rect), static_cast<Gdiplus::REAL>(GRID_BOTTOM)));
+    fillPoints.push_back(Gdiplus::PointF(MapIndexToX(POINT_COUNT - 1, rect), static_cast<Gdiplus::REAL>(S(GRID_BOTTOM))));
+    fillPoints.push_back(Gdiplus::PointF(MapIndexToX(0, rect), static_cast<Gdiplus::REAL>(S(GRID_BOTTOM))));
     fillPath.AddLines(fillPoints.data(), static_cast<INT>(fillPoints.size()));
     fillPath.CloseFigure();
     Gdiplus::SolidBrush fillBrush(fillColor);
     graphics.FillPath(&fillBrush, &fillPath);
 
-    Gdiplus::Pen curvePen(curveColor, CURVE_LINE_WIDTH);
+    Gdiplus::Pen curvePen(curveColor, CURVE_LINE_WIDTH * k);
     curvePen.SetLineJoin(Gdiplus::LineJoinRound);
     curvePen.SetStartCap(Gdiplus::LineCapRound);
     curvePen.SetEndCap(Gdiplus::LineCapRound);
 
-    Gdiplus::Pen shadowPen(Gdiplus::Color(40, 0, 0, 0), CURVE_LINE_WIDTH + 1);
+    Gdiplus::Pen shadowPen(Gdiplus::Color(40, 0, 0, 0), (CURVE_LINE_WIDTH + 1) * k);
     graphics.DrawLines(&shadowPen, curvePoints.data(), static_cast<INT>(curvePoints.size()));
 
     graphics.DrawLines(&curvePen, curvePoints.data(), static_cast<INT>(curvePoints.size()));
@@ -203,18 +198,18 @@ void VelocityCurveEditor::DrawCurve(Gdiplus::Graphics& graphics, const RECT& rec
         float glowSize;
         if (i == selectedPoint) {
             pointColor = Gdiplus::Color(255, 255, 140, 0);
-            pointSize = 6.0f;
-            glowSize = 12.0f;
+            pointSize = 6.0f * k;
+            glowSize = 12.0f * k;
         }
         else if (i == hoveredPoint) {
             pointColor = Gdiplus::Color(255, 255, 140, 0);
-            pointSize = 5.0f;
-            glowSize = 10.0f;
+            pointSize = 5.0f * k;
+            glowSize = 10.0f * k;
         }
         else {
             pointColor = curveColor;
-            pointSize = 4.0f;
-            glowSize = 8.0f;
+            pointSize = 4.0f * k;
+            glowSize = 8.0f * k;
         }
         {
             Gdiplus::GraphicsPath glowPath;
@@ -229,7 +224,7 @@ void VelocityCurveEditor::DrawCurve(Gdiplus::Graphics& graphics, const RECT& rec
         }
         {
             Gdiplus::SolidBrush shadowBrush(Gdiplus::Color(60, 0, 0, 0));
-            graphics.FillEllipse(&shadowBrush, x - pointSize + 1, y - pointSize + 1, pointSize * 2, pointSize * 2);
+            graphics.FillEllipse(&shadowBrush, x - pointSize + k, y - pointSize + k, pointSize * 2, pointSize * 2);
         }
         {
             Gdiplus::SolidBrush pointBrush(pointColor);
@@ -262,68 +257,95 @@ const wchar_t* VelocityCurveEditor::GetPlayingFeelText(float ratio) {
 }
 
 char VelocityCurveEditor::GetKeyForPoint(int point) {
-    static const char keys[] = "1234567890QWERTYUIOPASDFGHJKLZXCV";
-    return keys[point % (int)strlen(keys)];
+    return kVelocityKeys[std::clamp(point, 0, POINT_COUNT - 1)];
 }
 
 void VelocityCurveEditor::DrawInfoPanel(HDC hdc) {
-    HWND hInfoWnd = hwndVelocityInfo;
-    const LONG_PTR baseStyle = GetWindowLongPtrW(hInfoWnd, GWL_STYLE);
+    const ui::Palette& p = ui::pal();
+    RECT rc = GetClientRectRect();
+    SetBkMode(hdc, TRANSPARENT);
 
-    if (hoveredPoint >= 0 && hoveredPoint < POINT_COUNT) {
+    RECT label = { S(MARGIN), S(TOP_MARGIN), S(MARGIN + NAME_LABEL_WIDTH), S(TOP_MARGIN + TOP_CONTROL_HEIGHT) };
+    SetTextColor(hdc, p.text);
+    HGDIOBJ old = SelectObject(hdc, ui::font(dpi, INFO_FONT_SIZE, FW_NORMAL));
+    DrawTextW(hdc, L"Curve name", -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    wchar_t info[512];
+    const bool hovered = hoveredPoint >= 0 && hoveredPoint < POINT_COUNT;
+    if (hovered) {
         const int inputVel = (hoveredPoint * MAX_VELOCITY) / (POINT_COUNT - 1);
         const int outputVel = points[hoveredPoint];
         const float velocityRatio = outputVel / static_cast<float>(inputVel ? inputVel : 1);
-        wchar_t info[512];
         swprintf_s(info, _countof(info),
-            L"⦿ Step %d  │  In: %d → Out: %d  │  Ratio: %.2fx  │  %s (%s)  │  Key: [%c]", // replace someday... never
-            hoveredPoint, inputVel, outputVel, velocityRatio,
+            L"Step %d  |  In: %d -> Out: %d  |  Ratio: %.2fx  |  %s (%s)  |  Key: Alt+%c", // replace someday... never
+            hoveredPoint + 1, inputVel, outputVel, velocityRatio,
             GetDynamicText(outputVel), GetPlayingFeelText(velocityRatio),
             GetKeyForPoint(hoveredPoint));
-
-        HFONT hFont = CreateCustomFont(-20, FW_SEMIBOLD);
-        SetWindowLongPtrW(hInfoWnd, GWL_STYLE, (baseStyle & ~(SS_LEFT | SS_RIGHT)) | SS_CENTER);
-        SendMessageW(hInfoWnd, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
-        SetWindowTextW(hInfoWnd, info);
-        DeleteObject(hFont);
     }
     else {
-        HFONT hDefaultFont = CreateCustomFont(-18, FW_SEMIBOLD);
-        SetWindowLongPtrW(hInfoWnd, GWL_STYLE, (baseStyle & ~(SS_LEFT | SS_RIGHT)) | SS_CENTER);
-        SendMessageW(hInfoWnd, WM_SETFONT, reinterpret_cast<WPARAM>(hDefaultFont), TRUE);
-        SetWindowTextW(hInfoWnd, L"● Hover over velocity curve points to inspect values ●");
-        DeleteObject(hDefaultFont);
+        swprintf_s(info, _countof(info), L"%s", statusText.empty()
+            ? L"Drag the points or draw across the grid. Hold Alt while dragging to bend the neighbors too."
+            : statusText.c_str());
     }
-    InvalidateRect(hInfoWnd, nullptr, TRUE);
-    UpdateWindow(hInfoWnd);
+    RECT strip = { S(MARGIN), S(INFO_TOP), rc.right - S(MARGIN), S(INFO_TOP) + S(22) };
+    SetTextColor(hdc, hovered ? p.text : p.subtext);
+    SelectObject(hdc, ui::font(dpi, INFO_FONT_SIZE, hovered ? FW_SEMIBOLD : FW_NORMAL));
+    DrawTextW(hdc, info, -1, &strip, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(hdc, old);
 }
 
 float VelocityCurveEditor::MapIndexToX(int index, const RECT& rect) const {
-    return GRID_LEFT_MARGIN + (index * (rect.right - GRID_LEFT_MARGIN - GRID_RIGHT_MARGIN) / static_cast<float>(POINT_COUNT - 1));
+    const float left = static_cast<float>(S(GRID_LEFT_MARGIN));
+    const float right = static_cast<float>(rect.right - S(GRID_RIGHT_MARGIN));
+    return left + index * (right - left) / static_cast<float>(POINT_COUNT - 1);
 }
 
-float VelocityCurveEditor::MapVelocityToY(int velocity, const RECT& rect) const {
-    return GRID_BOTTOM - ((velocity * (GRID_BOTTOM - GRID_TOP)) / static_cast<float>(MAX_VELOCITY));
+float VelocityCurveEditor::MapVelocityToY(int velocity, const RECT&) const {
+    const float top = static_cast<float>(S(GRID_TOP));
+    const float bottom = static_cast<float>(S(GRID_BOTTOM));
+    return bottom - velocity * (bottom - top) / static_cast<float>(MAX_VELOCITY);
 }
 
 int VelocityCurveEditor::MapXToIndex(int x, const RECT& rect) const {
-    float normalizedX = (x - GRID_LEFT_MARGIN) * (POINT_COUNT - 1) / static_cast<float>(rect.right - GRID_LEFT_MARGIN - GRID_RIGHT_MARGIN);
-    return static_cast<int>(std::clamp(normalizedX, 0.0f, static_cast<float>(POINT_COUNT - 1)));
+    const float left = static_cast<float>(S(GRID_LEFT_MARGIN));
+    const float right = static_cast<float>(rect.right - S(GRID_RIGHT_MARGIN));
+    float normalizedX = (x - left) * (POINT_COUNT - 1) / (right - left);
+    return static_cast<int>(std::lround(std::clamp(normalizedX, 0.0f, static_cast<float>(POINT_COUNT - 1))));
 }
 
 int VelocityCurveEditor::MapYToVelocity(int y) const {
-    float normalizedY = (GRID_BOTTOM - y) * MAX_VELOCITY / static_cast<float>(GRID_BOTTOM - GRID_TOP);
-    return static_cast<int>(std::clamp(normalizedY, 0.0f, static_cast<float>(MAX_VELOCITY)));
+    const float top = static_cast<float>(S(GRID_TOP));
+    const float bottom = static_cast<float>(S(GRID_BOTTOM));
+    float normalizedY = (bottom - y) * MAX_VELOCITY / (bottom - top);
+    return static_cast<int>(std::lround(std::clamp(normalizedY, 0.0f, static_cast<float>(MAX_VELOCITY))));
+}
+
+bool VelocityCurveEditor::InGrid(int x, int y) const {
+    RECT rect = GetClientRectRect();
+    const int pad = S(HIT_RADIUS);
+    return x >= S(GRID_LEFT_MARGIN) - pad && x <= rect.right - S(GRID_RIGHT_MARGIN) + pad
+        && y >= S(GRID_TOP) - pad && y <= S(GRID_BOTTOM) + pad;
+}
+
+void VelocityCurveEditor::SetPoint(int index, int velocity) {
+    // Snap to preset values if within threshold
+    constexpr int snapThreshold = 3;
+    const int snapValues[] = { 0, 32, 64, 96, 127 };
+    for (int sv : snapValues) {
+        if (std::abs(velocity - sv) <= snapThreshold) {
+            velocity = sv;
+            break;
+        }
+    }
+    points[index] = std::clamp(velocity, 0, MAX_VELOCITY);
 }
 
 void VelocityCurveEditor::OnMouseDown(int x, int y) {
-    if (y < GRID_TOP || y > GRID_BOTTOM)
+    SetFocus(hwndEditor);
+    if (!InGrid(x, y))
         return;
 
-    RECT rect;
-    ::GetClientRect(hwndEditor, &rect);
-
-    selectedPoint = -1;
+    RECT rect = GetClientRectRect();
     float closestDist = FLT_MAX;
     int closestPoint = -1;
 
@@ -332,50 +354,51 @@ void VelocityCurveEditor::OnMouseDown(int x, int y) {
         float py = MapVelocityToY(points[i], rect);
         float dist = std::hypot(x - px, y - py);
 
-        if (dist <= HIT_RADIUS * 1.5f && dist < closestDist) {
+        if (dist <= S(HIT_RADIUS) * 1.5f && dist < closestDist) {
             closestDist = dist;
             closestPoint = i;
         }
     }
-    if (closestPoint != -1) {
-        selectedPoint = closestPoint;
-        isDragging = true;
-        SetCapture(hwndEditor);
-        InvalidateCurveArea();
+    if (closestPoint == -1) {
+        closestPoint = MapXToIndex(x, rect);
+        SetPoint(closestPoint, MapYToVelocity(y));
     }
+    selectedPoint = closestPoint;
+    isDragging = true;
+    statusText.clear();
+    SetCapture(hwndEditor);
+    InvalidateCurveArea();
 }
 
 void VelocityCurveEditor::OnMouseMove(int x, int y) {
+    if (!tracking) {
+        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwndEditor, 0 };
+        tracking = TrackMouseEvent(&tme) != FALSE;
+    }
+    RECT rect = GetClientRectRect();
     if (isDragging && selectedPoint >= 0) {
-        RECT rect = GetClientRectRect();
-        int newVelocity = MapYToVelocity(y);
-
-        // Snap to preset values if within threshold
-        constexpr int snapThreshold = 3;
-        const int snapValues[] = { 0, 32, 64, 96, 127 };
-        for (int sv : snapValues) {
-            if (std::abs(newVelocity - sv) <= snapThreshold) {
-                newVelocity = sv;
-                break;
-            }
+        const int newVelocity = MapYToVelocity(y);
+        const int column = MapXToIndex(x, rect);
+        if (column != selectedPoint) {
+            const int from = points[selectedPoint];
+            const int span = column - selectedPoint;
+            for (int i = selectedPoint; i != column; i += span > 0 ? 1 : -1)
+                SetPoint(i, from + (newVelocity - from) * (i - selectedPoint) / span);
+            selectedPoint = column;
         }
-
-        if (points[selectedPoint] != newVelocity) {
-            points[selectedPoint] = std::clamp(newVelocity, 0, 127);
-            if (isAltKeyDown) {
-                SmoothNearbyPoints(selectedPoint);
-            }
-            InvalidateCurveArea();
+        SetPoint(selectedPoint, newVelocity);
+        if (GetKeyState(VK_MENU) < 0) {
+            SmoothNearbyPoints(selectedPoint);
         }
+        hoveredPoint = selectedPoint;
+        InvalidateCurveArea();
         return;
     }
 
-    if (y >= GRID_TOP - HIT_RADIUS && y <= GRID_BOTTOM + HIT_RADIUS) {
-        RECT rect = GetClientRectRect();
-        int oldHovered = hoveredPoint;
-        float minDist = HIT_RADIUS * 1.5f;
-        hoveredPoint = -1;
-
+    int oldHovered = hoveredPoint;
+    hoveredPoint = -1;
+    if (InGrid(x, y)) {
+        float minDist = S(HIT_RADIUS) * 1.5f;
         int baseIndex = MapXToIndex(x, rect);
         for (int i = std::max(0, baseIndex - 1); i <= std::min(POINT_COUNT - 1, baseIndex + 1); i++) {
             float px = MapIndexToX(i, rect);
@@ -386,16 +409,10 @@ void VelocityCurveEditor::OnMouseMove(int x, int y) {
                 hoveredPoint = i;
             }
         }
-        if (oldHovered != hoveredPoint) {
-            InvalidateCurveArea();
-        }
     }
-    else if (hoveredPoint != -1) {
-        hoveredPoint = -1;
+    if (oldHovered != hoveredPoint) {
         InvalidateCurveArea();
     }
-    lastMouseX = x;
-    lastMouseY = y;
 }
 
 RECT VelocityCurveEditor::GetClientRectRect() const {
@@ -455,14 +472,18 @@ void VelocityCurveEditor::LoadPreset(const std::string& preset) {
             points[i] = static_cast<int>(127.0 * (0.5 + 0.5 * std::tanh((x - 0.5) * 5)));
         }
     }
+    statusText.clear();
     InvalidateCurveArea();
 }
 
 void VelocityCurveEditor::SaveCurve() {
     wchar_t curveNameW[256];
     GetWindowTextW(hwndCurveName, curveNameW, _countof(curveNameW));
-    std::wstring wstr(curveNameW);
-    std::string name(wstr.begin(), wstr.end());
+    char utf8[1024] = {};
+    WideCharToMultiByte(CP_UTF8, 0, curveNameW, -1, utf8, sizeof(utf8), nullptr, nullptr);
+    std::string name(utf8);
+    name.erase(0, name.find_first_not_of(" \t"));
+    name.erase(name.find_last_not_of(" \t") + 1);
 
     if (name.empty()) {
         MessageBoxW(hwndEditor, L"Please enter a name for the curve.", L"Error", MB_OK | MB_ICONWARNING);
@@ -477,91 +498,103 @@ void VelocityCurveEditor::SaveCurve() {
     auto& curves = config.playback.customVelocityCurves;
     auto it = std::find_if(curves.begin(), curves.end(), [&name](const auto& c) { return c.name == name; });
 
+    int index = 0;
     if (it != curves.end()) {
         int ret = MessageBoxW(hwndEditor, L"A curve with this name already exists. Overwrite?",
             L"Confirm Overwrite", MB_YESNO | MB_ICONQUESTION);
-        if (ret == IDYES)
-            *it = curve;
-        else
+        if (ret != IDYES)
             return;
+        *it = curve;
+        index = static_cast<int>(it - curves.begin());
     }
     else {
         curves.push_back(curve);
+        index = static_cast<int>(curves.size()) - 1;
     }
 
-    try {
-        config.saveToFile("config.json");
-        MessageBoxW(hwndEditor, L"Curve saved successfully!", L"Success", MB_OK | MB_ICONINFORMATION);
-    }
-    catch (const std::exception& e) {
-        MessageBoxA(hwndEditor, e.what(), "Error saving curve", MB_OK | MB_ICONERROR);
-    }
+    currentPreset = name;
+    statusText = L"Saved \"" + widen(name) + L"\" and switched playback to it.";
+    if (onSaved)
+        onSaved(5 + index);
+    InvalidateCurveArea();
 }
 
 void VelocityCurveEditor::InvalidateCurveArea() {
-    RECT rect;
-    ::GetClientRect(hwndEditor, &rect);
-    RECT curveRect = { 0, GRID_TOP, rect.right, GRID_BOTTOM };
-    InvalidateRect(hwndEditor, &curveRect, FALSE);
-}
-
-RECT VelocityCurveEditor::GetClientRect() const {
-    RECT rect;
-    ::GetClientRect(hwndEditor, &rect);
-    return rect;
+    InvalidateRect(hwndEditor, nullptr, FALSE);
 }
 
 VelocityCurveEditor::~VelocityCurveEditor() {
-    if (hInfoFont) { DeleteObject(hInfoFont); hInfoFont = nullptr; }
-    if (hLargeFont) { DeleteObject(hLargeFont); hLargeFont = nullptr; }
+    if (fieldBrush) { DeleteObject(fieldBrush); fieldBrush = nullptr; }
     if (hwndEditor == activeWindow) { activeWindow = nullptr; }
 }
 
-bool VelocityCurveEditor::Create(HWND parent) {
+bool VelocityCurveEditor::Create(HWND parent, int curveIndex, std::function<void(int)> saved) {
     if (activeWindow && IsWindow(activeWindow)) {
         SetForegroundWindow(activeWindow);
         return false;
     }
-    if (activeWindow && !IsWindow(activeWindow))
-        activeWindow = nullptr;
-
+    activeWindow = nullptr;
     hwndParent = parent;
+    onSaved = std::move(saved);
+
+    std::wstring name = L"Custom Curve";
+    const auto& custom = midi::Config::getInstance().playback.customVelocityCurves;
+    if (curveIndex >= 5 && curveIndex - 5 < static_cast<int>(custom.size())) {
+        const auto& c = custom[static_cast<size_t>(curveIndex - 5)];
+        std::copy(c.velocityValues.begin(), c.velocityValues.end(), points.begin());
+        currentPreset = c.name;
+        name = widen(c.name);
+    }
+    else if (curveIndex >= 0 && curveIndex < 5) {
+        const auto table = out::builtin_curve(curveIndex);
+        std::copy(table.begin(), table.end(), points.begin());
+    }
+
     if (!isClassRegistered) {
         WNDCLASSEXW wc = { sizeof(wc) };
         wc.lpfnWndProc = EditorWndProc;
         wc.hInstance = GetModuleHandle(nullptr);
         wc.lpszClassName = WINDOW_CLASS_NAME;
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        wc.hCursor = LoadCursor(nullptr, IDC_CROSS);
-        if (!RegisterClassExW(&wc)) {
-            UnregisterClassW(WINDOW_CLASS_NAME, GetModuleHandle(nullptr));
-            if (!RegisterClassExW(&wc))
-                return false;
-        }
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(103));
+        if (!RegisterClassExW(&wc))
+            return false;
         isClassRegistered = true;
     }
+
+    dpi = window_dpi(parent);
+    const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+    const DWORD ex = WS_EX_TOOLWINDOW;
+    RECT r = { 0, 0, S(EDITOR_WIDTH), S(EDITOR_HEIGHT) };
+    adjust_rect(r, style, ex, dpi);
+    const int width = r.right - r.left, height = r.bottom - r.top;
     RECT parentRect;
     GetWindowRect(parent, &parentRect);
-    int xPos = parentRect.left + (parentRect.right - parentRect.left - EDITOR_WIDTH) / 2;
-    int yPos = parentRect.top + (parentRect.bottom - parentRect.top - EDITOR_HEIGHT) / 2;
+    int xPos = parentRect.left + (parentRect.right - parentRect.left - width) / 2;
+    int yPos = parentRect.top + (parentRect.bottom - parentRect.top - height) / 2;
 
     hwndEditor = CreateWindowExW(
-        WS_EX_TOOLWINDOW,
+        ex,
         WINDOW_CLASS_NAME,
         L"Velocity Curve Editor",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        xPos, yPos, EDITOR_WIDTH, EDITOR_HEIGHT,
-        parent, nullptr, GetModuleHandle(nullptr), nullptr
+        style,
+        xPos, yPos, width, height,
+        parent, nullptr, GetModuleHandle(nullptr), this
     );
     if (!hwndEditor)
         return false;
 
-    hInfoFont = CreateCustomFont(-12, FW_NORMAL);
-    hLargeFont = CreateCustomFont(-14, FW_BOLD);
+    const int actual = window_dpi(hwndEditor);
+    if (actual != dpi) {
+        dpi = actual;
+        RECT a = { 0, 0, S(EDITOR_WIDTH), S(EDITOR_HEIGHT) };
+        adjust_rect(a, style, ex, dpi);
+        SetWindowPos(hwndEditor, nullptr, 0, 0, a.right - a.left, a.bottom - a.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 
     CreateControls();
-
-    SetWindowLongPtr(hwndEditor, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetWindowTextW(hwndCurveName, name.c_str());
+    Restyle();
     activeWindow = hwndEditor;
 
     ShowWindow(hwndEditor, SW_SHOW);
@@ -570,71 +603,77 @@ bool VelocityCurveEditor::Create(HWND parent) {
 }
 
 void VelocityCurveEditor::CreateControls() {
-    hInfoFont = CreateCustomFont(-INFO_FONT_SIZE, FW_NORMAL);
-    hLargeFont = CreateCustomFont(-LARGE_FONT_SIZE, FW_BOLD);
-
-    int currentX = MARGIN;
     hwndCurveName = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"EDIT", L"Custom Curve",
-        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-        currentX + 50, TOP_MARGIN, NAME_FIELD_WIDTH, TOP_CONTROL_HEIGHT,
+        0, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+        0, 0, 0, 0,
         hwndEditor, reinterpret_cast<HMENU>(ID_VCURVE_NAME), GetModuleHandle(nullptr), nullptr
     );
-    SendMessage(hwndCurveName, WM_SETFONT, reinterpret_cast<WPARAM>(hLargeFont), TRUE);
-
-    currentX += NAME_FIELD_WIDTH + BUTTON_GAP;
-    hwndVelocityInfo = CreateWindowW(
-        L"STATIC", L"Hover over points to see values",
-        WS_CHILD | WS_VISIBLE | SS_CENTER,
-        currentX + 42, TOP_MARGIN, INFO_FIELD_WIDTH, TOP_CONTROL_HEIGHT,
-        hwndEditor, nullptr, GetModuleHandle(nullptr), nullptr
-    );
-    SendMessage(hwndVelocityInfo, WM_SETFONT, reinterpret_cast<WPARAM>(hInfoFont), TRUE);
+    SendMessageW(hwndCurveName, EM_SETLIMITTEXT, 60, 0);
 
     hwndGridlines = CreateWindowW(
         L"BUTTON", L"Grid",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | BS_PUSHLIKE,
-        EDITOR_WIDTH - MARGIN - GRID_TOGGLE_WIDTH - 25, TOP_MARGIN,
-        GRID_TOGGLE_WIDTH, TOP_CONTROL_HEIGHT,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 0, 0,
         hwndEditor, reinterpret_cast<HMENU>(ID_VCURVE_GRIDLINES), GetModuleHandle(nullptr), nullptr
     );
-    SendMessage(hwndGridlines, WM_SETFONT, reinterpret_cast<WPARAM>(hInfoFont), TRUE);
-    SendMessage(hwndGridlines, BM_SETCHECK, BST_CHECKED, 0);
 
     // Create main control buttons, centered horizontally.
-    const int totalButtons = 7;
-    const int totalButtonWidth = totalButtons * BUTTON_WIDTH + (totalButtons - 1) * BUTTON_GAP;
-    const int buttonStartX = (EDITOR_WIDTH - totalButtonWidth) / 2;
-    const int buttonY = BUTTONS_TOP;
-    CreateButton(L"Save", buttonStartX, buttonY, BUTTON_WIDTH, ID_VCURVE_SAVE);
-    CreateButton(L"Reset", buttonStartX + (BUTTON_WIDTH + BUTTON_GAP), buttonY, BUTTON_WIDTH, ID_VCURVE_RESET);
-    CreateButton(L"Linear", buttonStartX + 2 * (BUTTON_WIDTH + BUTTON_GAP), buttonY, BUTTON_WIDTH, ID_VCURVE_LINEAR);
-    CreateButton(L"Log", buttonStartX + 3 * (BUTTON_WIDTH + BUTTON_GAP), buttonY, BUTTON_WIDTH, ID_VCURVE_LOG);
-    CreateButton(L"Exp", buttonStartX + 4 * (BUTTON_WIDTH + BUTTON_GAP), buttonY, BUTTON_WIDTH, ID_VCURVE_EXP);
-    CreateButton(L"S-Curve", buttonStartX + 5 * (BUTTON_WIDTH + BUTTON_GAP), buttonY, BUTTON_WIDTH, ID_VCURVE_SCURVE);
-    CreateButton(L"Smooth", buttonStartX + 6 * (BUTTON_WIDTH + BUTTON_GAP), buttonY, BUTTON_WIDTH, ID_VCURVE_SMOOTH);
+    CreateButton(L"Save", ID_VCURVE_SAVE);
+    CreateButton(L"Reset", ID_VCURVE_RESET);
+    CreateButton(L"Linear", ID_VCURVE_LINEAR);
+    CreateButton(L"Log", ID_VCURVE_LOG);
+    CreateButton(L"Exp", ID_VCURVE_EXP);
+    CreateButton(L"S-Curve", ID_VCURVE_SCURVE);
+    CreateButton(L"Smooth", ID_VCURVE_SMOOTH);
+    LayoutControls();
 }
 
-void VelocityCurveEditor::CreateButton(const wchar_t* text, int x, int y, int width, int id) {
-    HWND btn = CreateWindowExW(
+void VelocityCurveEditor::CreateButton(const wchar_t* text, int id) {
+    CreateWindowExW(
         0,
         L"BUTTON",
         text,
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_NOTIFY,
-        x, y, width, BUTTON_HEIGHT,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, 0, 0,
         hwndEditor,
-        reinterpret_cast<HMENU>(id),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
         GetModuleHandle(nullptr),
         nullptr
     );
-    SendMessage(btn, WM_SETFONT, reinterpret_cast<WPARAM>(hInfoFont), TRUE);
+}
+
+void VelocityCurveEditor::LayoutControls() {
+    RECT rc = GetClientRectRect();
+    const int nameX = S(MARGIN + NAME_LABEL_WIDTH);
+    const int nameH = S(24);
+    SetWindowPos(hwndCurveName, nullptr, nameX, S(TOP_MARGIN) + (S(TOP_CONTROL_HEIGHT) - nameH) / 2,
+        S(NAME_FIELD_WIDTH), nameH, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(hwndGridlines, nullptr, rc.right - S(MARGIN) - S(GRID_TOGGLE_WIDTH), S(TOP_MARGIN),
+        S(GRID_TOGGLE_WIDTH), S(TOP_CONTROL_HEIGHT), SWP_NOZORDER | SWP_NOACTIVATE);
+
+    const int ids[] = { ID_VCURVE_SAVE, ID_VCURVE_RESET, ID_VCURVE_LINEAR, ID_VCURVE_LOG, ID_VCURVE_EXP, ID_VCURVE_SCURVE, ID_VCURVE_SMOOTH };
+    const int count = static_cast<int>(std::size(ids));
+    const int totalButtonWidth = count * S(BUTTON_WIDTH) + (count - 1) * S(BUTTON_GAP);
+    int x = (rc.right - totalButtonWidth) / 2;
+    for (int id : ids) {
+        SetWindowPos(GetDlgItem(hwndEditor, id), nullptr, x, S(BUTTONS_TOP), S(BUTTON_WIDTH), S(BUTTON_HEIGHT), SWP_NOZORDER | SWP_NOACTIVATE);
+        x += S(BUTTON_WIDTH) + S(BUTTON_GAP);
+    }
+    SendMessageW(hwndCurveName, WM_SETFONT, reinterpret_cast<WPARAM>(ui::font(dpi, LARGE_FONT_SIZE, FW_NORMAL)), TRUE);
+}
+
+void VelocityCurveEditor::Restyle() {
+    if (fieldBrush)
+        DeleteObject(fieldBrush);
+    fieldBrush = CreateSolidBrush(ui::pal().field);
+    ui::theme_window(hwndEditor);
+    ui::theme_control(hwndCurveName, L"DarkMode_CFD");
+    RedrawWindow(hwndEditor, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
 }
 
 void VelocityCurveEditor::OnClose() {
-    if (!isBeingDestroyed) {
-        isBeingDestroyed = true;
-        DestroyWindow(hwndEditor);
-    }
+    DestroyWindow(hwndEditor);
 }
 
 void VelocityCurveEditor::ResetToLinear() {
@@ -644,6 +683,12 @@ void VelocityCurveEditor::ResetToLinear() {
 }
 
 LRESULT CALLBACK VelocityCurveEditor::EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_NCCREATE) {
+        auto* created = reinterpret_cast<VelocityCurveEditor*>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams);
+        created->hwndEditor = hwnd;
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
+        return DefWindowProc(hwnd, msg, wParam, lParam);
+    }
     VelocityCurveEditor* editor = reinterpret_cast<VelocityCurveEditor*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     if (!editor) return DefWindowProc(hwnd, msg, wParam, lParam);
 
@@ -651,37 +696,71 @@ LRESULT CALLBACK VelocityCurveEditor::EditorWndProc(HWND hwnd, UINT msg, WPARAM 
     case WM_PAINT:
         editor->OnPaint();
         return 0;
+    case WM_ERASEBKGND:
+        return 1;
     case WM_LBUTTONDOWN:
         editor->OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
     case WM_MOUSEMOVE:
         editor->OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
+    case WM_MOUSELEAVE:
+        editor->tracking = false;
+        if (editor->hoveredPoint != -1 && !editor->isDragging) {
+            editor->hoveredPoint = -1;
+            editor->InvalidateCurveArea();
+        }
+        return 0;
     case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED:
         editor->OnMouseUp();
         return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            SetCursor(LoadCursor(nullptr, editor->InGrid(pt.x, pt.y) ? IDC_CROSS : IDC_ARROW));
+            return TRUE;
+        }
+        break;
     case WM_KEYDOWN:
-        if (wParam == VK_MENU) editor->isAltKeyDown = true;
         if (wParam == VK_ESCAPE) editor->OnClose();
-        return 0;
-    case WM_KEYUP:
-        if (wParam == VK_MENU) editor->isAltKeyDown = false;
         return 0;
     case WM_COMMAND:
         return editor->OnCommand(wParam, lParam);
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        ui::draw_button(dis, dis->CtlID == ID_VCURVE_GRIDLINES && editor->showGridlines, editor->dpi);
+        return TRUE;
+    }
+    case WM_CTLCOLOREDIT:
+        SetTextColor(reinterpret_cast<HDC>(wParam), ui::pal().fieldText);
+        SetBkColor(reinterpret_cast<HDC>(wParam), ui::pal().field);
+        return reinterpret_cast<LRESULT>(editor->fieldBrush);
+    case WM_THEMECHANGED:
+        editor->Restyle();
+        return 0;
+    case WM_DPICHANGED: {
+        editor->dpi = HIWORD(wParam);
+        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+            suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        editor->LayoutControls();
+        editor->InvalidateCurveArea();
+        return 0;
+    }
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
-        if (editor) {
-            SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
-            if (hwnd == activeWindow)
-                activeWindow = nullptr;
-            delete editor;
-        }
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+        if (hwnd == activeWindow)
+            activeWindow = nullptr;
+        if (editor->hwndParent && IsWindow(editor->hwndParent))
+            SetForegroundWindow(editor->hwndParent);
+        delete editor;
         return 0;
-    case WM_NCCREATE:
-        return TRUE;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
@@ -692,7 +771,7 @@ LRESULT VelocityCurveEditor::OnCommand(WPARAM wParam, LPARAM lParam) {
         if (HIWORD(wParam) == BN_CLICKED) { SaveCurve(); return 0; }
         break;
     case ID_VCURVE_RESET:
-        if (HIWORD(wParam) == BN_CLICKED) { ResetToLinear(); InvalidateCurveArea(); return 0; }
+        if (HIWORD(wParam) == BN_CLICKED) { ResetToLinear(); statusText.clear(); InvalidateCurveArea(); return 0; }
         break;
     case ID_VCURVE_LINEAR:
         if (HIWORD(wParam) == BN_CLICKED) { LoadPreset("Linear"); return 0; }
@@ -707,11 +786,12 @@ LRESULT VelocityCurveEditor::OnCommand(WPARAM wParam, LPARAM lParam) {
         if (HIWORD(wParam) == BN_CLICKED) { LoadPreset("S-Curve"); return 0; }
         break;
     case ID_VCURVE_SMOOTH:
-        if (HIWORD(wParam) == BN_CLICKED) { SmoothCurve(); InvalidateCurveArea(); return 0; }
+        if (HIWORD(wParam) == BN_CLICKED) { SmoothCurve(); statusText.clear(); InvalidateCurveArea(); return 0; }
         break;
     case ID_VCURVE_GRIDLINES:
         if (HIWORD(wParam) == BN_CLICKED) {
-            showGridlines = (SendMessage(hwndGridlines, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            showGridlines = !showGridlines;
+            InvalidateRect(hwndGridlines, nullptr, FALSE);
             InvalidateCurveArea();
             return 0;
         }
@@ -724,16 +804,17 @@ void VelocityCurveEditor::OnPaint() {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwndEditor, &ps);
     HDC memDC = CreateCompatibleDC(hdc);
-    RECT clientRect;
-    ::GetClientRect(hwndEditor, &clientRect);
+    RECT clientRect = GetClientRectRect();
     HBITMAP memBitmap = CreateCompatibleBitmap(hdc, clientRect.right, clientRect.bottom);
     HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(memDC, memBitmap));
-    FillRect(memDC, &clientRect, reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-    Gdiplus::Graphics graphics(memDC);
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    if (showGridlines)
+    SetDCBrushColor(memDC, ui::pal().panel);
+    FillRect(memDC, &clientRect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    {
+        Gdiplus::Graphics graphics(memDC);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         DrawGrid(graphics, clientRect);
-    DrawCurve(graphics, clientRect);
+        DrawCurve(graphics, clientRect);
+    }
     DrawInfoPanel(memDC);
     BitBlt(hdc, 0, 0, clientRect.right, clientRect.bottom, memDC, 0, 0, SRCCOPY);
     SelectObject(memDC, oldBitmap);

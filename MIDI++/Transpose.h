@@ -4,21 +4,19 @@
 #include <array>
 #include <set>
 #include <map>
-#include "midi_parser.h" 
 
 class TransposeEngine {
 public:
     // Core functionality
     [[nodiscard]] std::string estimateKey(const std::vector<int>& notes,
         const std::vector<double>& durations) const;
-    [[nodiscard]] std::string detectGenre(const MidiFile& midiFile) const;
+    [[nodiscard]] std::string detectGenre(const std::vector<int>& notes,
+        const std::vector<double>& durations, double tempo, int timeSignatureNum) const;
     [[nodiscard]] int findBestTranspose(const std::vector<int>& notes,
         const std::vector<double>& durations,
         const std::string& detectedKey,
         const std::string& genre) const;
 
-    [[nodiscard]] std::pair<std::vector<int>, std::vector<double>>
-        extractNotesAndDurations(const MidiFile& midiFile) const;
 
 private:
     static constexpr std::array<const char*, 12> NOTE_NAMES = {

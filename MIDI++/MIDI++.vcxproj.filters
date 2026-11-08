@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -13,127 +13,60 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
-    <Filter Include="Header Files\RobloxPlayback">
+    <Filter Include="Source Files\Engine">
       <UniqueIdentifier>{88fdd53f-0446-4e76-b493-f506d162ca37}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files\Parser">
-      <UniqueIdentifier>{328f2d6e-8049-4db8-901b-decba4385bb3}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Header Files\Misc">
+    <Filter Include="Source Files\UI">
       <UniqueIdentifier>{3ece1c76-1c0a-4881-ace2-f09694818068}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files\JSON">
-      <UniqueIdentifier>{665ae0b4-a030-45cd-bf6e-2b512a56ee23}</UniqueIdentifier>
+    <Filter Include="Header Files\Engine">
+      <UniqueIdentifier>{328f2d6e-8049-4db8-901b-decba4385bb3}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files\Live">
+    <Filter Include="Header Files\UI">
       <UniqueIdentifier>{7dbbe2b0-9e4d-4524-81e3-eb24110b1759}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ConfigHandler.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MIDIParser.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="PlaybackCore.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="TranspositionCore.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Track.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="VelocityFrame.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MIDI2Key.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MIDIConnect.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MIDIDeviceUI.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="InputInjector.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MIDI++.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="SplashScreen.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="RtMidi.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
+    <ClCompile Include="ConfigHandler.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="Input.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="KSMidi.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="LegitWindow.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="LiveMidi.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="MIDI++.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Output.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="Player.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="Song.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="SplashScreen.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Track.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="TranspositionCore.cpp"><Filter>Source Files\Engine</Filter></ClCompile>
+    <ClCompile Include="VelocityFrame.cpp"><Filter>Source Files\UI</Filter></ClCompile>
+    <ClCompile Include="Widgets.cpp"><Filter>Source Files\UI</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="PlaybackSystem.hpp">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="midi_parser.h">
-      <Filter>Header Files\Parser</Filter>
-    </ClInclude>
-    <ClInclude Include="midi_structures.h">
-      <Filter>Header Files\Parser</Filter>
-    </ClInclude>
-    <ClInclude Include="Transpose.h">
-      <Filter>Header Files\Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="config.hpp">
-      <Filter>Header Files\JSON</Filter>
-    </ClInclude>
-    <ClInclude Include="json.hpp">
-      <Filter>Header Files\JSON</Filter>
-    </ClInclude>
-    <ClInclude Include="TrackControl.hpp">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="VelocityCurveEditor.hpp">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="resource.h">
-      <Filter>Header Files\Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="MIDI2Key.hpp">
-      <Filter>Header Files\Live</Filter>
-    </ClInclude>
-    <ClInclude Include="MIDIConnect.hpp">
-      <Filter>Header Files\Live</Filter>
-    </ClInclude>
-    <ClInclude Include="MIDIDeviceUI.hpp">
-      <Filter>Header Files\Live</Filter>
-    </ClInclude>
-    <ClInclude Include="InputHeader.h">
-      <Filter>Header Files\Live</Filter>
-    </ClInclude>
-    <ClInclude Include="thread_pool.h">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="thread_safe_queue.h">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="timer.h">
-      <Filter>Header Files\RobloxPlayback</Filter>
-    </ClInclude>
-    <ClInclude Include="SplashScreen.h">
-      <Filter>Header Files\Misc</Filter>
-    </ClInclude>
-    <ClInclude Include="RtMidi.h">
-      <Filter>Header Files\Parser</Filter>
-    </ClInclude>
+    <ClInclude Include="config.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="Input.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="json.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="KSMidi.h"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="LegitWindow.hpp"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="LiveMidi.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="Output.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="Player.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="resource.h"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Song.hpp"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="SplashScreen.h"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="TrackControl.hpp"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Transpose.h"><Filter>Header Files\Engine</Filter></ClInclude>
+    <ClInclude Include="VelocityCurveEditor.hpp"><Filter>Header Files\UI</Filter></ClInclude>
+    <ClInclude Include="Widgets.hpp"><Filter>Header Files\UI</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="MIDI++.rc">
-      <Filter>Resource Files</Filter>
-    </ResourceCompile>
+    <ResourceCompile Include="MIDI++.rc"><Filter>Resource Files</Filter></ResourceCompile>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="icon1.ico">
-      <Filter>Resource Files</Filter>
-    </Image>
+    <Image Include="icon1.ico"><Filter>Resource Files</Filter></Image>
+    <Image Include="logo.png"><Filter>Resource Files</Filter></Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="config.json" />
   </ItemGroup>
 </Project>

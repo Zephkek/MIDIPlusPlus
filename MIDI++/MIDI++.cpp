@@ -1,2052 +1,2056 @@
-#include "PlaybackSystem.hpp"
+#include "Player.hpp"
+#include "LiveMidi.hpp"
+#include "LegitWindow.hpp"
+#include "SplashScreen.h"
 #include "TrackControl.hpp"
+#include "Transpose.h"
 #include "VelocityCurveEditor.hpp"
-#include "MIDI2Key.hpp"
-#include "MIDIConnect.hpp"
-#include "MIDIDeviceUI.hpp"
+#include "Widgets.hpp"
 #include "resource.h"
 
 #include <CommCtrl.h>
 #include <GdiPlus.h>
+#include <dbt.h>
+#include <shellapi.h>
+#include <windowsx.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
-#include <ctime>     
+#include <ctime>
 #include <filesystem>
-#include <future>
-#include <functional>
-#include <iostream>
-#include <locale>
+#include <memory>
 #include <mutex>
-#include <regex>
-#include <sstream>
+#include <random>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
-#include <algorithm>
-#include <iomanip>
-#include <cwchar>
-#include <windowsx.h>
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Gdiplus.lib")
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
-// -----------------------------------------------------------------------------
-// RAII wrappers for HANDLE and GDI+ token
-// -----------------------------------------------------------------------------
-struct UniqueHandle {
-    HANDLE handle;
-    UniqueHandle(HANDLE h = nullptr) : handle(h) {}
-    ~UniqueHandle() {
-        if (handle && handle != INVALID_HANDLE_VALUE) {
-            CloseHandle(handle);
-        }
-    }
-    UniqueHandle(const UniqueHandle&) = delete;
-    UniqueHandle& operator=(const UniqueHandle&) = delete;
-    operator HANDLE() const { return handle; }
-};
+namespace fs = std::filesystem;
 
-struct GdiplusTokenWrapper {
-    ULONG_PTR token;
-    GdiplusTokenWrapper() : token(0) {}
-    ~GdiplusTokenWrapper() {
-        if (token != 0)
-            Gdiplus::GdiplusShutdown(token);
-    }
-};
+namespace {
 
-// -----------------------------------------------------------------------------
-// Global objects and variables
-// -----------------------------------------------------------------------------
-class VirtualPianoPlayer* g_player = nullptr;
-static std::unique_ptr<MIDI2Key>   g_midi2key;
-static std::unique_ptr<MIDIConnect> g_midiConnect;
-static TrackControl g_trackControl;
-int g_sustainCutoff = 64;
-static int g_selectedMidiDevice = 0;    // device index
-static int g_selectedMidiChannel = -1;    // -1 means “All channels”
+    constexpr wchar_t kClass[] = L"MIDI++";
+    constexpr wchar_t kTitle[] = L"MIDI++ v1.0.6";
+    constexpr UINT WM_APP_LOG = WM_APP + 101;
+    constexpr UINT WM_APP_PLAYER = WM_APP + 102;
+    constexpr UINT WM_APP_HOTKEY = WM_APP + 103;
+    constexpr UINT WM_APP_LOADED = WM_APP + 104;
+    constexpr UINT_PTR IDT_FRAME = 1;
+    constexpr UINT_PTR IDT_STATS = 2;
+    constexpr UINT_PTR IDT_DEVICES = 3;
 
-// Global handles and states
-static HINSTANCE    g_hInst = nullptr;
-static HWND         g_hMainWnd = nullptr;
-static HANDLE       g_hSingleInstanceMutex = nullptr;
+    enum : int {
+        ID_SEARCH = 101, ID_CB_SORT, ID_BTN_REFRESH, ID_LB_MIDI, ID_BTN_PREV, ID_BTN_NEXT, ID_CHK_SHUFFLE,
+        ID_SEEK, ID_BTN_LOAD, ID_BTN_PLAY, ID_BTN_RESTART, ID_BTN_REW, ID_BTN_SKIP, ID_BTN_SPEEDDN, ID_BTN_SPEEDUP,
+        ID_BTN_OUTPUT, ID_BTN_88KEY, ID_BTN_TRANSPOSEOUT, ID_BTN_VELOCITY, ID_CB_VELOCITY_CURVE, ID_BTN_VLCURVE,
+        ID_BTN_SUSTAIN, ID_SLIDER_SUSTAIN, ID_BTN_VOLADJ, ID_CB_BATCH, ID_BTN_LEGIT, ID_BTN_TRANSPOSE,
+        ID_CB_MIDIDEV, ID_CB_MIDICH, ID_BTN_MIDI2QWERTY, ID_BTN_MIDICONNECT, ID_BTN_REFRESH_MIDI,
+        ID_CHK_GAME, ID_CHK_TOP, ID_CHK_DARK, ID_SLIDER_OPACITY, ID_BTN_FOLDER, ID_BTN_STOP,
+        ID_EDIT_LOG, ID_BTN_CLEARLOG, ID_BTN_KEYDN, ID_BTN_KEYUP,
+    };
 
-static std::mutex        g_logMutex;
-static std::string       g_logBuffer;
-static std::atomic<bool> g_guiReady{ false };
+    enum Hotkey : WPARAM { HK_PLAY, HK_REWIND, HK_SKIP, HK_STOP };
 
-static std::chrono::steady_clock::time_point g_lastTimeUpdate;
-static constexpr auto TIME_UPDATE_INTERVAL = std::chrono::milliseconds(500);
+    constexpr int kBatchMs[] = { -1, 0, 1, 2, 4, 8, 16 };
 
-static const std::regex g_ansiPattern("\x1B\\[[0-9;]*[A-Za-z]");
+    struct Item {
+        std::wstring name;
+        fs::path path;
+        bool folder = false;
+        bool favorite = false;
+        std::time_t written = 0;
+    };
 
-static std::unordered_map<int, bool> g_toggleStates;
+    struct Loaded {
+        uint64_t seq = 0;
+        fs::path path;
+        std::shared_ptr<Song> song;
+        std::string error;
+        double ms = 0.0;
+        bool autoplay = false;
+        int64_t keep = -1;
+    };
 
-static bool g_randomSongEnabled = false;
+    struct Panel {
+        RECT r{};
+        const wchar_t* title = L"";
+    };
 
-// -----------------------------------------------------------------------------
-// Control layout constants
-// -----------------------------------------------------------------------------
-namespace Layout {
-    // Window dimensions
-    static const int WIN_W = 880;
-    static const int WIN_H = 760;
+    struct App {
+        HINSTANCE inst = nullptr;
+        HWND wnd = nullptr;
+        int dpi = 96;
+        HBRUSH brBg = nullptr, brPanel = nullptr, brField = nullptr, brLog = nullptr;
+        HWND search = nullptr, sortCombo = nullptr, list = nullptr;
+        HWND speed = nullptr, tempoLabel = nullptr, keyLabel = nullptr, keyValue = nullptr;
+        HWND curveCombo = nullptr, batchCombo = nullptr, cutoffValue = nullptr;
+        HWND devCombo = nullptr, chanCombo = nullptr, latency = nullptr, opacityLabel = nullptr, log = nullptr;
+        ui::Slider seek, cutoff, opacity;
+        ui::PianoView piano;
+        ui::Visualizer visual;
+        ui::Display lcd;
+        ui::StatusBar status;
+        TrackControl tracks;
+        std::vector<Panel> panels;
+        std::vector<RECT> frames;
+        std::vector<RECT> screens;
+        std::vector<TrackControl::TrackInfo> songRows;
+        bool liveRows = false;
+        bool awayNoted = false;
+        int key = 0;
+        int songNo = 0, songTotal = 0;
+        Player player;
+        std::shared_ptr<const Song> song;
+        std::thread loader;
+        std::atomic<bool> cancelLoad{ false };
+        std::atomic<int> loadProgress{ 0 };
+        uint64_t loadSeq = 0;
+        bool loading = false;
+        fs::path loadingPath;
+        fs::path dir = L"midi";
+        std::vector<Item> items;
+        std::vector<int> shown;
+        std::vector<live::Device> devices;
+        HWND lastExternal = nullptr;
+        HWINEVENTHOOK hook = nullptr;
+        std::thread hotkeys;
+        std::atomic<bool> quit{ false };
+        bool shuffle = false;
+        bool connectBegun = false;
+        bool freshSong = false;
+        bool wasPlaying = false;
+        int gameTranspose = 0;
+        int shownSecond = -1;
+        int away = 0;
+        uint64_t lastSent = 0, lastNotes = 0;
+        std::chrono::steady_clock::time_point lastStats = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point lastFrame = std::chrono::steady_clock::now();
+        double notesPerSec = 0.0, keysPerSec = 0.0;
+        Player::Stats timing;
+        live::Latency live;
+    };
 
-    // MIDI Files group
-    static const int FILES_X = 10;
-    static const int FILES_Y = 10;
-    static const int FILES_W = 240;
-    static const int FILES_H = 405;
+    App g;
+    std::mutex g_logMutex;
+    std::wstring g_logPending;
+    std::atomic<bool> g_logPosted{ false };
 
-    // Playback (Basic) group
-    static const int PBASIC_X = 260;
-    static const int PBASIC_Y = 10;
-    static const int PBASIC_W = 600;
-    static const int PBASIC_H = 100;
-    static const int PB_ROW1_Y = PBASIC_Y + 25;
-    static const int PB_ROW2_Y = PBASIC_Y + 25 + 28 + 8;
-    static const int PB_BTN_WIDTH = 80;
-    static const int PB_BTN_HEIGHT = 28;
-    static const int PB_BTN_GAP = 10;
-    static const int PB_MIDI_QWERTY_X = PBASIC_X + 340;
-    static const int PB_MIDI_QWERTY_Y = PB_ROW1_Y;
-    static const int PB_STATIC_TIME_X = PBASIC_X + 470;
-    static const int PB_STATIC_TIME_Y = PBASIC_Y + 28;
-    static const int PB_STATIC_TIME_W = 120;
-    static const int PB_STATIC_TIME_H = 25;
+    midi::Config& cfg() { return midi::Config::getInstance(); }
+    int S(int v) { return MulDiv(v, g.dpi, 96); }
+    void start_playing(bool restart);
 
-    // Advanced group
-    static const int PADV_X = 260;
-    static const int PADV_Y = PBASIC_Y + PBASIC_H + 5;
-    static const int PADV_W = 600;
-    static const int PADV_H = 100;
-
-    // Config group
-    static const int CFG_X = 260;
-    static const int CFG_Y = PADV_Y + PADV_H + 5;
-    static const int CFG_W = 600;
-    static const int CFG_H = 60;
-
-    // Details group
-    static const int DET_X = 260;
-    static const int DET_Y = CFG_Y + CFG_H + 5;
-    static const int DET_W = 600;
-    static const int DET_H = 130;
-
-    // Tracks group
-    static const int TRK_X = 10;
-    static const int TRK_Y = DET_Y + DET_H + 10;
-    static const int TRK_W = 850;
-    static const int TRK_H = 120;
-
-    // Log group
-    static const int LOG_X = 10;
-    static const int LOG_Y = TRK_Y + TRK_H + 10;
-    static const int LOG_W = 850;
-    static const int LOG_H = 150;
-}
-
-// Global sustain cutoff value box (edit control)
-static HWND g_hSustainCutoffValueBox = nullptr;
-
-// Global listbox for MIDI files (now showing folders & files) and other UI elements
-static HWND g_lbMidi = nullptr;
-static HWND g_editDetails = nullptr;
-static HWND g_editTracks = nullptr;
-static HWND g_hOpacityIndicatorBox = nullptr;
-
-// -----------------------------------------------------------------------------
-// Control IDs
-// -----------------------------------------------------------------------------
-enum ControlID {
-    // ListBox and ComboBoxes
-    ID_CB_SORT = 101,
-    ID_BTN_REFRESH,
-    ID_LB_MIDI,
-
-    // Basic Playback Group
-    ID_GRP_PLAY,
-    ID_BTN_LOAD,
-    ID_BTN_PLAY,
-    ID_BTN_STOP,
-    ID_BTN_SKIP,
-    ID_BTN_REW,
-    ID_BTN_SPEEDUP,
-    ID_BTN_SPEEDDN,
-    ID_BTN_RESTART,
-
-    // MIDI -> QWERTY and device controls
-    ID_BTN_MIDI2QWERTY,
-    ID_CB_MIDIDEV,
-    ID_CB_MIDICH,
-    ID_BTN_MIDICONNECT,
-
-    // Advanced / Extra
-    ID_GRP_ADV,
-    ID_BTN_88KEY,
-    ID_BTN_VOLADJ,
-    ID_BTN_VELOCITY,
-    ID_BTN_SUSTAIN,
-    ID_BTN_TRANSPOSE,
-    ID_BTN_TRANSPOSEOUT,
-    ID_CB_VELOCITY_CURVE,
-    ID_SLIDER_SUSTAIN_CUTOFF,
-    ID_STATIC_SUSTAIN_LABEL,
-
-    // Config
-    ID_GRP_CONFIG,
-    ID_CHK_TOP,
-    ID_CHK_RANDOM_SONG,   
-    ID_SLIDER_OPACITY, 
-
-    // Details
-    ID_GRP_DETAILS,
-    ID_EDIT_DETAILS,
-
-    // Tracks
-    ID_GRP_TRACKS,
-    ID_EDIT_TRACKS,
-
-    // Log
-    ID_GRP_LOG,
-    ID_BTN_REFRESH_VCURVE,
-    ID_EDIT_LOG,
-    ID_BTN_CLEARLOG,
-    ID_BTN_REFRESH_MIDI,
-    ID_BTN_VLCURVE,
-
-    // Custom messages and timers
-    WM_UPDATE_LOG = WM_APP + 101,
-    IDT_TIMELEFT_TIMER,
-    ID_STATIC_TIME,
-
-    // Track Mute/Solo button bases
-    ID_TRACK_MUTE_BASE = 2000,
-    ID_TRACK_SOLO_BASE = 2500,
-    ID_BTN_PREV_SONG = 3000,
-    ID_BTN_NEXT_SONG = 3001
-};
-
-static bool IsToggleButtonID(int id) {
-    switch (id) {
-    case ID_BTN_88KEY:
-    case ID_BTN_VOLADJ:
-    case ID_BTN_VELOCITY:
-    case ID_BTN_SUSTAIN:
-    case ID_BTN_TRANSPOSEOUT:
-    case ID_BTN_MIDI2QWERTY:
-    case ID_BTN_MIDICONNECT:
-        return true;
-    default:
-        return false;
-    }
-}
-
-// -----------------------------------------------------------------------------
-// MIDI Folder Scanning and Sorting (with folder exploration)
-// -----------------------------------------------------------------------------
-
-struct MidiItem {
-    std::wstring name;
-    std::wstring fullPath;
-    bool isFolder;
-    std::time_t lastWrite; 
-};
-
-static std::vector<MidiItem> g_midiItems;
-static std::filesystem::path g_currentMidiDir = L"midi";
-// bunch of kids
-std::string getReadableKey(const std::string& key) {
-    const std::string prefix = "VK_";
-    if (key.compare(0, prefix.size(), prefix) == 0) {
-        return key.substr(prefix.size());
-    }
-    return key;
-}
-static void ScanMidiFolder() {
-    g_midiItems.clear();
-    std::filesystem::path currentDir = g_currentMidiDir;
-    if (!std::filesystem::exists(currentDir) || !std::filesystem::is_directory(currentDir)) {
-        std::wcout << L"[Scan] '" << currentDir.wstring() << L"' not found.\n";
-        return;
-    }
-  
-    if (!std::filesystem::equivalent(currentDir, "midi")) {
-        MidiItem parentItem;
-        parentItem.name = L"..";
-        parentItem.fullPath = currentDir.parent_path().wstring();
-        parentItem.isFolder = true;
-        parentItem.lastWrite = 0;
-        g_midiItems.push_back(parentItem);
-    }
-    for (const auto& entry : std::filesystem::directory_iterator(currentDir)) {
-        MidiItem item;
-        item.name = entry.path().filename().wstring();
-        item.fullPath = entry.path().wstring();
-        item.isFolder = entry.is_directory();
-        if (!item.isFolder) {
-            auto ext = entry.path().extension().wstring();
-            std::wstring lw(ext.size(), L'\0');
-            std::transform(ext.begin(), ext.end(), lw.begin(), ::towlower);
-            if (lw != L".mid" && lw != L".midi")
-                continue; // skip non-midi files
-            auto ftime = std::filesystem::last_write_time(entry.path());
-            auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now()
-            );
-            item.lastWrite = std::chrono::system_clock::to_time_t(sctp);
-        }
-        else {
-            item.lastWrite = 0;
-        }
-        g_midiItems.push_back(item);
-    }
-}
-
-static int GetSortMode() {
-    HWND cbSort = GetDlgItem(g_hMainWnd, ID_CB_SORT);
-    if (!cbSort)
-        return 0; // default to "Name (A-Z)"
-    return static_cast<int>(SendMessage(cbSort, CB_GETCURSEL, 0, 0));
-}
-
-static void SortMidiItems() {
-    int sortMode = GetSortMode();
-
-    std::vector<MidiItem> parentItems;
-    std::vector<MidiItem> folders;
-    std::vector<MidiItem> files;
-
-    for (const auto& item : g_midiItems) {
-        if (item.name == L"..")
-            parentItems.push_back(item);
-        else if (item.isFolder)
-            folders.push_back(item);
-        else
-            files.push_back(item);
+    std::wstring widen(const std::string& s) {
+        if (s.empty())
+            return {};
+        UINT cp = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0) ? CP_UTF8 : CP_ACP;
+        int n = MultiByteToWideChar(cp, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+        std::wstring w(n, L'\0');
+        MultiByteToWideChar(cp, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+        return w;
     }
 
-    // Sorting function for folders.
-    auto folderSort = [sortMode](const MidiItem& a, const MidiItem& b) -> bool {
-        // Folders don’t have a valid date, so we sort them by name.
-        switch (sortMode) {
-        case 0: // Name (A-Z)
-            return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-        case 1: // Name (Z-A)
-            return _wcsicmp(a.name.c_str(), b.name.c_str()) > 0;
-        default:
-            return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-        }
-        };
-
-    auto fileSort = [sortMode](const MidiItem& a, const MidiItem& b) -> bool {
-        bool aFav = (std::filesystem::path(a.fullPath).parent_path().filename() == L"favorite");
-        bool bFav = (std::filesystem::path(b.fullPath).parent_path().filename() == L"favorite");
-        if (aFav != bFav)
-            return aFav; 
-
-        switch (sortMode) {
-        case 0: // Name (A-Z)
-            return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-        case 1: // Name (Z-A)
-            return _wcsicmp(a.name.c_str(), b.name.c_str()) > 0;
-        case 2: // Date (Old-New)
-            return a.lastWrite < b.lastWrite;
-        case 3: // Date (New-Old)
-            return a.lastWrite > b.lastWrite;
-        default:
-            return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-        }
-        };
-
-    std::sort(folders.begin(), folders.end(), folderSort);
-    std::sort(files.begin(), files.end(), fileSort);
-
-    g_midiItems.clear();
-    for (const auto& p : parentItems)
-        g_midiItems.push_back(p);
-    for (const auto& f : folders)
-        g_midiItems.push_back(f);
-    for (const auto& f : files)
-        g_midiItems.push_back(f);
-}
-
-static void RefreshVelocityCurveCombo(HWND hWnd) {
-    HWND cbVelocity = GetDlgItem(hWnd, ID_CB_VELOCITY_CURVE);
-    SendMessage(cbVelocity, CB_RESETCONTENT, 0, 0);
-
-    SendMessageW(cbVelocity, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Linear Coarse"));
-    SendMessageW(cbVelocity, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Linear Fine"));
-    SendMessageW(cbVelocity, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Improved Low Volume"));
-    SendMessageW(cbVelocity, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Logarithmic"));
-    SendMessageW(cbVelocity, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Exponential"));
-
-    const auto& customCurves = midi::Config::getInstance().playback.customVelocityCurves;
-    for (const auto& curve : customCurves) {
-        std::wstring wCurveName(curve.name.begin(), curve.name.end());
-        SendMessageW(cbVelocity, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wCurveName.c_str()));
+    std::string narrow(const std::wstring& w) {
+        if (w.empty())
+            return {};
+        int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+        std::string s(n, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+        return s;
     }
 
-    SendMessage(cbVelocity, CB_SETCURSEL, 0, 0);
-}
-
-static void PopulateMidiList() {
-    if (!g_lbMidi)
-        return; // Guard against a NULL listbox handle
-
-    SendMessage(g_lbMidi, LB_RESETCONTENT, 0, 0);
-    int maxWidth = 0;
-    HDC hdc = GetDC(g_lbMidi);
-    HFONT hFont = reinterpret_cast<HFONT>(SendMessage(g_lbMidi, WM_GETFONT, 0, 0));
-    if (hFont)
-        SelectObject(hdc, hFont);
-
-    for (const auto& item : g_midiItems) {
-        std::wstring displayName;
-        if (item.name == L"..") {
-            displayName = L".. (Back)";
-        }
-        else if (item.isFolder) {
-            displayName = item.name + L"\\";
-        }
-        else {
-            displayName = item.name;
-            std::filesystem::path filePath(item.fullPath);
-            std::filesystem::path favFolder = std::filesystem::path(L"midi") / L"favorite";
-            std::filesystem::path favFile = favFolder / filePath.filename();
-            if (std::filesystem::exists(favFile))
-                displayName = L"★ " + displayName;
-        }
-        SendMessageW(g_lbMidi, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(displayName.c_str()));
-
-        SIZE textSize;
-        GetTextExtentPoint32W(hdc, displayName.c_str(), static_cast<int>(displayName.size()), &textSize);
-        if (textSize.cx > maxWidth)
-            maxWidth = textSize.cx;
+    std::wstring thousands(uint64_t v) {
+        std::wstring s = std::to_wstring(v);
+        for (int i = static_cast<int>(s.size()) - 3; i > 0; i -= 3)
+            s.insert(static_cast<size_t>(i), L",");
+        return s;
     }
 
-    ReleaseDC(g_lbMidi, hdc);
-    SendMessage(g_lbMidi, LB_SETHORIZONTALEXTENT, maxWidth, 0);
-    if (SendMessage(g_lbMidi, LB_GETCOUNT, 0, 0) > 0)
-        SendMessage(g_lbMidi, LB_SETCURSEL, 0, 0);
-}
-
-static std::wstring GetSelectedMidiFullPath() {
-    int sel = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
-    if (sel == LB_ERR || sel < 0 || sel >= static_cast<int>(g_midiItems.size()))
-        return L"";
-    const MidiItem& item = g_midiItems[sel];
-    if (item.isFolder)
-        return L""; 
-    return item.fullPath;
-}
-
-// -----------------------------------------------------------------------------
-// Logging (Redirect std::cout)
-// -----------------------------------------------------------------------------
-static std::streambuf* g_oldCoutBuf = nullptr;
-
-static std::string GetTimeStamp() {
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    char buf[32];
-    sprintf_s(buf, "[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
-    return buf;
-}
-
-class LogBuf : public std::streambuf {
-    static constexpr size_t BUFFER_SIZE = 8192;
-    char buffer[BUFFER_SIZE];
-    bool startOfLine = true;
-    std::string timestampCache;
-    void updateTimestampCache() {
+    void say(const char* fmt, ...) {
+        char buf[2048];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
         SYSTEMTIME st;
         GetLocalTime(&st);
-        char buf[32];
-        sprintf_s(buf, "[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
-        timestampCache = buf;
+        wchar_t ts[16];
+        swprintf_s(ts, L"[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
+        std::wstring line = ts + widen(buf) + L"\r\n";
+        {
+            std::lock_guard l(g_logMutex);
+            g_logPending += line;
+        }
+        if (g.wnd && !g_logPosted.exchange(true))
+            PostMessageW(g.wnd, WM_APP_LOG, 0, 0);
     }
-protected:
-    std::streamsize xsputn(const char* s, std::streamsize n) override {
-        if (n <= 0)
+
+    void flush_log() {
+        g_logPosted = false;
+        std::wstring text;
+        {
+            std::lock_guard l(g_logMutex);
+            text.swap(g_logPending);
+        }
+        if (text.empty() || !g.log)
+            return;
+        int len = GetWindowTextLengthW(g.log);
+        if (len + static_cast<int>(text.size()) > 200000) {
+            SendMessageW(g.log, EM_SETSEL, 0, len / 2);
+            SendMessageW(g.log, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L""));
+            len = GetWindowTextLengthW(g.log);
+        }
+        SendMessageW(g.log, EM_SETSEL, len, len);
+        SendMessageW(g.log, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
+        SendMessageW(g.log, EM_SCROLLCARET, 0, 0);
+    }
+
+    void save_config() {
+        try {
+            cfg().saveToFile("config.json");
+        }
+        catch (const std::exception& e) {
+            say("[Config] %s", e.what());
+        }
+    }
+
+    std::string window_title(HWND h) {
+        wchar_t t[256] = {};
+        GetWindowTextW(h, t, 256);
+        std::string s = narrow(t);
+        return s.empty() ? "the game window" : s;
+    }
+
+    bool ours(HWND h) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        return pid == GetCurrentProcessId();
+    }
+
+    HWND root(HWND h) {
+        HWND r = h ? GetAncestor(h, GA_ROOTOWNER) : nullptr;
+        return r ? r : h;
+    }
+
+    HWND find_roblox() {
+        HWND h = FindWindowW(nullptr, L"Roblox");
+        return h && IsWindowVisible(h) ? h : nullptr;
+    }
+
+    HWND pick_target() {
+        HWND fg = root(GetForegroundWindow());
+        if (fg && !ours(fg) && IsWindowVisible(fg))
+            return fg;
+        if (HWND rb = find_roblox())
+            return rb;
+        if (g.lastExternal && IsWindow(g.lastExternal) && IsWindowVisible(g.lastExternal))
+            return g.lastExternal;
+        return nullptr;
+    }
+
+    DWORD token_integrity(HANDLE token, bool& ok) {
+        ok = false;
+        DWORD n = 0;
+        GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &n);
+        std::vector<BYTE> buf(n);
+        if (!n || !GetTokenInformation(token, TokenIntegrityLevel, buf.data(), n, &n))
             return 0;
-        std::string chunk;
-        chunk.reserve(n + (n / 20) * timestampCache.size());
-        size_t start = 0;
-        for (size_t i = 0; i < static_cast<size_t>(n); ++i) {
-            if (startOfLine) {
-                if (timestampCache.empty()) updateTimestampCache();
-                chunk.append(timestampCache);
-                startOfLine = false;
-            }
-            if (s[i] == '\n') {
-                chunk.append(s + start, i - start + 1);
-                start = i + 1;
-                startOfLine = true;
-            }
+        auto* tml = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf.data());
+        ok = true;
+        return *GetSidSubAuthority(tml->Label.Sid, *GetSidSubAuthorityCount(tml->Label.Sid) - 1);
+    }
+
+    void check_elevation(HWND target) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(target, &pid);
+        HANDLE self = nullptr;
+        bool selfOk = false, otherOk = false, denied = false;
+        DWORD mine = 0, theirs = 0;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self)) {
+            mine = token_integrity(self, selfOk);
+            CloseHandle(self);
         }
-        if (start < static_cast<size_t>(n))
-            chunk.append(s + start, n - start);
-        chunk = std::regex_replace(chunk, g_ansiPattern, "");
-        {
-            std::lock_guard<std::mutex> lk(g_logMutex);
-            g_logBuffer += chunk;
-        }
-        if (g_guiReady.load(std::memory_order_acquire))
-            PostMessage(g_hMainWnd, WM_UPDATE_LOG, 0, 0);
-        return n;
-    }
-    int overflow(int c = EOF) override {
-        if (c == EOF) return c;
-        char ch = static_cast<char>(c);
-        return xsputn(&ch, 1);
-    }
-};
-
-static LogBuf g_logBuf;
-
-static void RedirectCout() {
-    if (!g_oldCoutBuf)
-        g_oldCoutBuf = std::cout.rdbuf(&g_logBuf);
-}
-
-static void RestoreCout() {
-    if (g_oldCoutBuf) {
-        std::cout.rdbuf(g_oldCoutBuf);
-        g_oldCoutBuf = nullptr;
-    }
-}
-
-// -----------------------------------------------------------------------------
-// UI Helper Functions
-// -----------------------------------------------------------------------------
-static void SetAlwaysOnTop(HWND hwnd, bool top) {
-    SetWindowPos(hwnd, (top ? HWND_TOPMOST : HWND_NOTOPMOST),
-        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-}
-static void UpdateWindowFocusability() {
-    if (!g_hMainWnd) return;
-    bool shouldBeNoActivate = false;
-    if ((g_midiConnect && g_midiConnect->IsActive()) ||
-        (g_midi2key && g_midi2key->IsActive()) ||
-        (g_player && g_player->midiFileSelected.load(std::memory_order_acquire) && !g_player->paused.load(std::memory_order_relaxed)))
-    {
-        shouldBeNoActivate = true;
-    }
-    LONG exStyle = GetWindowLong(g_hMainWnd, GWL_EXSTYLE);
-    bool currentNoActivate = (exStyle & WS_EX_NOACTIVATE) != 0;
-    if (shouldBeNoActivate != currentNoActivate) {
-        if (shouldBeNoActivate)
-            exStyle |= WS_EX_NOACTIVATE;
-        else
-            exStyle &= ~WS_EX_NOACTIVATE;
-        SetWindowLong(g_hMainWnd, GWL_EXSTYLE, exStyle);
-        SetWindowPos(g_hMainWnd, nullptr, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
-    }
-}
-
-static COLORREF g_colorOn = RGB(100, 255, 100);
-static COLORREF g_colorOff = RGB(220, 220, 220);
-static COLORREF g_colorHover = RGB(180, 180, 250);
-static COLORREF g_colorPush = RGB(160, 160, 255);
-static COLORREF g_colorText = RGB(0, 0, 0);
-
-static void DrawFancyButton(const DRAWITEMSTRUCT* dis) {
-    if (dis->CtlType != ODT_BUTTON)
-        return;
-
-    int ctrlID = static_cast<int>(dis->CtlID);
-    bool togglable = IsToggleButtonID(ctrlID);
-    bool toggled = togglable ? g_toggleStates[ctrlID] : false;
-
-    HDC hdc = dis->hDC;
-    RECT rc = dis->rcItem;
-    bool isHot = (dis->itemState & ODS_HOTLIGHT) != 0;
-    bool isPressed = (dis->itemState & ODS_SELECTED) != 0;
-    bool isFocused = (dis->itemState & ODS_FOCUS) != 0;
-
-    COLORREF fill = g_colorOff;
-    if (ctrlID == ID_BTN_SUSTAIN && g_player != nullptr) {
-        switch (g_player->currentSustainMode) {
-        case SustainMode::IG:
-            fill = RGB(220, 220, 220);
-            break;
-        case SustainMode::SPACE_DOWN:
-            fill = RGB(100, 255, 100);
-            break;
-        case SustainMode::SPACE_UP:
-            fill = RGB(100, 100, 255);
-            break;
-        }
-    }
-    else if (togglable && toggled) {
-        fill = g_colorOn;
-    }
-    if (isPressed)
-        fill = g_colorPush;
-    else if (isHot)
-        fill = g_colorHover;
-
-    HBRUSH br = CreateSolidBrush(fill);
-    FillRect(hdc, &rc, br);
-    DeleteObject(br);
-
-    FrameRect(hdc, &rc, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-
-    wchar_t text[128] = { 0 };
-    GetWindowTextW(dis->hwndItem, text, 128);
-
-    SetTextColor(hdc, g_colorText);
-    SetBkMode(hdc, TRANSPARENT);
-
-    static HFONT s_hRegularFont = nullptr;
-    static HFONT s_hBoldFont = nullptr;
-    if (!s_hRegularFont) {
-        s_hRegularFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        LOGFONT lf = {};
-        GetObject(s_hRegularFont, sizeof(lf), &lf);
-        lf.lfWeight = FW_BOLD;
-        s_hBoldFont = CreateFontIndirect(&lf);
-    }
-    HFONT hFontToUse = (togglable && toggled) ? s_hBoldFont : s_hRegularFont;
-    HFONT hOldFont = reinterpret_cast<HFONT>(SelectObject(hdc, hFontToUse));
-    DrawTextW(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (isFocused) {
-        RECT frc = rc;
-        InflateRect(&frc, -3, -3);
-        DrawFocusRect(hdc, &frc);
-    }
-    SelectObject(hdc, hOldFont);
-}
-
-// -----------------------------------------------------------------------------
-// MIDI Details and Tracks Update Functions
-// -----------------------------------------------------------------------------
-static const char* GM_NAMES[128] = {
-    "Acoustic Grand Piano","Bright Acoustic Piano","Electric Grand Piano","Honky-tonk Piano","Electric Piano 1","Electric Piano 2","Harpsichord","Clavi","Celesta","Glockenspiel","Music Box","Vibraphone","Marimba","Xylophone","Tubular Bells","Dulcimer",
-    "Drawbar Organ","Percussive Organ","Rock Organ","Church Organ","Reed Organ","Accordion","Harmonica","Tango Accordion","Acoustic Guitar (nylon)","Acoustic Guitar (steel)","Electric Guitar (jazz)","Electric Guitar (clean)","Electric Guitar (muted)","Overdriven Guitar","Distortion Guitar","Guitar harmonics",
-    "Acoustic Bass","Electric Bass (finger)","Electric Bass (pick)","Fretless Bass","Slap Bass 1","Slap Bass 2","Synth Bass 1","Synth Bass 2","Violin","Viola","Cello","Contrabass","Tremolo Strings","Pizzicato Strings","Orchestral Harp","Timpani",
-    "String Ensemble 1","String Ensemble 2","SynthStrings 1","SynthStrings 2","Choir Aahs","Voice Oohs","Synth Voice","Orchestra Hit","Trumpet","Trombone","Tuba","Muted Trumpet","French Horn","Brass Section","SynthBrass 1","SynthBrass 2",
-    "Soprano Sax","Alto Sax","Tenor Sax","Baritone Sax","Oboe","English Horn","Bassoon","Clarinet","Piccolo","Flute","Recorder","Pan Flute","Blown Bottle","Shakuhachi","Whistle","Ocarina",
-    "Lead 1 (square)","Lead 2 (sawtooth)","Lead 3 (calliope)","Lead 4 (chiff)","Lead 5 (charang)","Lead 6 (voice)","Lead 7 (fifths)","Lead 8 (bass + lead)","Pad 1 (new age)","Pad 2 (warm)","Pad 3 (polysynth)","Pad 4 (choir)","Pad 5 (bowed)","Pad 6 (metallic)","Pad 7 (halo)","Pad 8 (sweep)",
-    "FX 1 (rain)","FX 2 (soundtrack)","FX 3 (crystal)","FX 4 (atmosphere)","FX 5 (brightness)","FX 6 (goblins)","FX 7 (echoes)","FX 8 (sci-fi)","Sitar","Banjo","Shamisen","Koto","Kalimba","Bag pipe","Fiddle","Shanai",
-    "Tinkle Bell","Agogo","Steel Drums","Woodblock","Taiko Drum","Melodic Tom","Synth Drum","Reverse Cymbal","Guitar Fret Noise","Breath Noise","Seashore","Bird Tweet","Telephone Ring","Helicopter","Applause","Gunshot"
-};
-
-static void UpdateMidiDetails() {
-    if (!g_player)
-        return;
-    MidiFile& mf = g_player->midi_file;
-    SetWindowTextW(g_editDetails, L"");
-
-    auto appendLine = [&](const std::wstring& line) {
-        std::wstring s = line + L"\r\n";
-        SendMessageW(g_editDetails, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(s.c_str()));
-        };
-
-    std::wstring wpath = GetSelectedMidiFullPath();
-    if (!wpath.empty()) {
-        std::filesystem::path p(wpath);
-        appendLine(L"File: " + p.filename().wstring());
-    }
-
-    std::wostringstream oss;
-    oss << std::left;
-    oss.str(L"");
-    oss << "Format: " << mf.format;
-    switch (mf.format) {
-    case 0: oss << " (single)"; break;
-    case 1: oss << " (multi)"; break;
-    case 2: oss << " (multi-song)"; break;
-    }
-    appendLine(oss.str());
-
-    int activeTracks = 0;
-    for (const auto& track : mf.tracks) {
-        if (!track.events.empty())
-            ++activeTracks;
-    }
-    oss.str(L"");
-    oss << "Tracks: " << activeTracks << "/" << mf.numTracks;
-    int totalNotes = 0;
-    for (const auto& track : mf.tracks) {
-        for (const auto& evt : track.events) {
-            if ((evt.status & 0xF0) == 0x90 && evt.data2 > 0)
-                ++totalNotes;
-        }
-    }
-    oss << " (" << totalNotes << " notes)";
-    appendLine(oss.str());
-
-    if (!mf.tempoChanges.empty()) {
-        double initialTempo = mf.tempoChanges[0].microsecondsPerQuarter;
-        double bpm = 60000000.0 / initialTempo;
-        oss.str(L"");
-        oss << "Tempo: " << std::fixed << std::setprecision(1) << bpm << " BPM";
-        if (mf.tempoChanges.size() > 1)
-            oss << " (" << (mf.tempoChanges.size() - 1) << " changes)";
-        appendLine(oss.str());
-    }
-    if (!mf.timeSignatures.empty()) {
-        auto& ts = mf.timeSignatures[0];
-        oss.str(L"");
-        oss << "Time Sig: " << static_cast<int>(ts.numerator) << "/" << static_cast<int>(ts.denominator);
-        if (mf.timeSignatures.size() > 1)
-            oss << " (" << (mf.timeSignatures.size() - 1) << " changes)";
-        appendLine(oss.str());
-    }
-    std::string modeStr;
-    switch (midi::Config::getInstance().playback.noteHandlingMode) {
-    case midi::NoteHandlingMode::FIFO: modeStr = "FIFO"; break;
-    case midi::NoteHandlingMode::LIFO: modeStr = "LIFO"; break;
-    default: modeStr = "None"; break;
-    }
-    std::string lastLine = "Note Mode: " + modeStr;
-    bool filterDrums = midi::Config::getInstance().midi.DETECT_DRUMS;
-    lastLine += (filterDrums ? " (Drum Detect: On)" : " (Ch10 Filter: Off)");
-    SendMessageA(g_editDetails, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(lastLine.c_str()));
-}
-static void UpdateTrackInfo() {
-    if (!g_player) {
-        std::vector<TrackControl::TrackInfo> empty;
-        g_trackControl.SetTracks(empty);
-        return;
-    }
-    MidiFile& mf = g_player->midi_file;
-    std::vector<TrackControl::TrackInfo> tracks;
-    for (size_t trackIndex = 0; trackIndex < mf.tracks.size(); ++trackIndex) {
-        TrackControl::TrackInfo info;
-        info.isMuted = false;
-        info.isSoloed = false;
-        info.isDrums = false; // initialize flag
-
-        if (trackIndex < g_player->trackMuted.size() && g_player->trackMuted[trackIndex])
-            info.isMuted = g_player->trackMuted[trackIndex]->load(std::memory_order_acquire);
-        if (trackIndex < g_player->trackSoloed.size() && g_player->trackSoloed[trackIndex])
-            info.isSoloed = g_player->trackSoloed[trackIndex]->load(std::memory_order_acquire);
-
-        const auto& track = mf.tracks[trackIndex];
-        int noteCount = 0;
-        std::unordered_map<int, int> channelCounts;
-        std::string trackName;
-        for (const auto& evt : track.events) {
-            if ((evt.status & 0xF0) == 0x90 && evt.data2 > 0) {
-                ++noteCount;
-                channelCounts[evt.status & 0x0F]++;
-            }
-            if ((evt.status & 0xF0) == 0xC0)
-                info.programNumber = evt.data1 & 0x7F;
-            if (evt.status == 0xFF && evt.data1 == 0x03)
-                trackName = std::string(evt.metaData.begin(), evt.metaData.end());
-        }
-        if (!channelCounts.empty()) {
-            info.channel = std::max_element(channelCounts.begin(), channelCounts.end(),
-                [](const auto& p1, const auto& p2) {
-                    return p1.second < p2.second;
-                })->first;
-        }
-        info.noteCount = noteCount;
-        info.trackName = trackName.empty() ? ("Track " + std::to_string(trackIndex + 1)) : trackName;
-        if (info.programNumber >= 0 && info.programNumber < 128) {
-            info.instrumentName = GM_NAMES[info.programNumber];
-            if (g_player->drum_flags.size() > trackIndex && g_player->drum_flags[trackIndex]) {
-                info.instrumentName += " (Drums)";
-                info.isDrums = true;
-            }
-        }
-        else {
-            info.instrumentName = "Unknown";
-        }
-        tracks.push_back(info);
-    }
-    g_trackControl.SetTracks(tracks);
-}
-static void FocusRobloxWindowInternal() {
-    HWND hRb = FindWindowW(nullptr, L"Roblox");
-    if (!hRb) {
-        std::cerr << "[WARNING] Could not find Roblox window.\n";
-        return;
-    }
-    if (!IsWindow(hRb)) {
-        std::cerr << "[ERROR] Found handle is not a valid window.\n";
-        return;
-    }
-    DWORD_PTR dwResult = 0;
-    if (SendMessageTimeout(hRb, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 500, &dwResult) == 0) {
-        std::cerr << "[WARNING] Roblox window is not responding; skipping focus.\n";
-        return;
-    }
-    if (!IsWindowVisible(hRb)) {
-        std::cerr << "[WARNING] Roblox window is not visible; skipping focus to avoid invasive changes.\n";
-        return;
-    }
-    if (IsIconic(hRb)) {
-        ShowWindow(hRb, SW_RESTORE);
-    }
-    else {
-        ShowWindow(hRb, SW_SHOWNA);
-    }
-    if (!SetForegroundWindow(hRb)) {
-        std::cerr << "[ERROR] Failed to bring Roblox window to foreground. Error code: " << GetLastError() << "\n";
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-}
-
-static void FocusRobloxWindow() {
-    std::thread(FocusRobloxWindowInternal).detach();
-}
-
-static void ClearLog(HWND editLog) {
-    if (!editLog) return;
-    {
-        std::lock_guard<std::mutex> lk(g_logMutex);
-        g_logBuffer.clear();
-    }
-    if (!SetWindowTextW(editLog, L"")) {
-        DWORD error = GetLastError();
-        std::cerr << "Failed to clear log. Error code: " << error << std::endl;
-    }
-}
-
-static void ToggleFavorite(int index) {
-    if (index < 0 || index >= static_cast<int>(g_midiItems.size()))
-        return;
-    MidiItem& item = g_midiItems[index];
-    if (item.isFolder)
-        return;
-
-    std::filesystem::path filePath(item.fullPath);
-    std::error_code ec;
-    if (filePath.parent_path().filename() == L"favorite") {
-        std::filesystem::remove(filePath, ec);
-        if (!ec) {
-            std::filesystem::path origPath = std::filesystem::path(L"midi") / filePath.filename();
-            item.fullPath = origPath.wstring();
-        }
-    }
-    else {
-        std::filesystem::path destFolder = std::filesystem::path(L"midi") / L"favorite";
-        if (!std::filesystem::exists(destFolder)) {
-            std::filesystem::create_directories(destFolder, ec);
-            if (ec)
-                return; // silently fail if folder creation fails
-        }
-        std::filesystem::path destFile = destFolder / filePath.filename();
-        std::filesystem::copy_file(filePath, destFile, std::filesystem::copy_options::overwrite_existing, ec);
-        if (!ec) {
-            item.fullPath = destFile.wstring();
-        }
-    }
-
-    if (g_lbMidi) {
-        std::wstring displayName;
-        if (item.name == L"..") {
-            displayName = L".. (Back)";
-        }
-        else if (item.isFolder) {
-            displayName = item.name + L"\\";
-        }
-        else {
-            displayName = item.name;
-            std::filesystem::path p(item.fullPath);
-            if (p.parent_path().filename() == L"favorite")
-                displayName = L"★ " + displayName;
-        }
-        SendMessageW(g_lbMidi, LB_DELETESTRING, index, 0);
-        SendMessageW(g_lbMidi, LB_INSERTSTRING, index, reinterpret_cast<LPARAM>(displayName.c_str()));
-    }
-}
-
-static LRESULT CALLBACK MidiListSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
-{
-    switch (msg)
-    {
-    case WM_RBUTTONDOWN:
-    {
-        POINT pt;
-        pt.x = GET_X_LPARAM(lParam);
-        pt.y = GET_Y_LPARAM(lParam);
-        int index = static_cast<int>(SendMessage(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y)));
-        if (index != LB_ERR) {
-            ToggleFavorite(index);
-        }
-        return 0;
-    }
-    default:
-        return DefSubclassProc(hwnd, msg, wParam, lParam);
-    }
-}
-static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        // temporary fix: this shit
-    case WM_NCLBUTTONDOWN:
-    {
-        if ((g_midi2key && g_midi2key->IsActive()) ||
-            (g_midiConnect && g_midiConnect->IsActive()) ||
-            (g_player &&
-                g_player->midiFileSelected.load(std::memory_order_acquire) &&
-                !g_player->paused.load(std::memory_order_acquire) &&
-                g_player->playback_started.load(std::memory_order_acquire) &&
-                (g_player->buffer_index.load(std::memory_order_acquire) < g_player->note_buffer.size()) &&
-                wParam == HTCAPTION))
-        {
-            return 0;
-        }
-        return DefWindowProc(hWnd, msg, wParam, lParam);
-    }
-
-
-    case WM_CREATE:
-    {
-        INITCOMMONCONTROLSEX icex = {};
-        icex.dwSize = sizeof(icex);
-        icex.dwICC = ICC_BAR_CLASSES;
-        InitCommonControlsEx(&icex);
-
-        // MIDI Files Group
-        CreateWindowW(L"button", L"MIDI Files",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            Layout::FILES_X, Layout::FILES_Y, Layout::FILES_W, Layout::FILES_H,
-            hWnd, reinterpret_cast<HMENU>(1), g_hInst, nullptr);
-
-        HWND cbSort = CreateWindowW(L"combobox", nullptr,
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            Layout::FILES_X + 10, Layout::FILES_Y + 20, 130, 110,
-            hWnd, reinterpret_cast<HMENU>(ID_CB_SORT), g_hInst, nullptr);
-        SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Name (A-Z)"));
-        SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Name (Z-A)"));
-        SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Date (Old-New)"));
-        SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Date (New-Old)"));
-        SendMessageW(cbSort, CB_SETCURSEL, 0, 0);
-        CreateWindowW(L"button", L"Refresh",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::FILES_X + 150, Layout::FILES_Y + 20, 70, 25,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH), g_hInst, nullptr);
-        g_lbMidi = CreateWindowW(L"listbox", nullptr,
-            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL | WS_HSCROLL | WS_BORDER | LBS_NOINTEGRALHEIGHT,
-            Layout::FILES_X + 10, Layout::FILES_Y + 50, 210, 350,
-            hWnd, reinterpret_cast<HMENU>(ID_LB_MIDI), g_hInst, nullptr);
-        SetWindowSubclass(g_lbMidi, MidiListSubclassProc, 0, 0);
-
-        // Playback (Basic) Group
-        CreateWindowW(L"button", L"Playback (Basic)",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            Layout::PBASIC_X, Layout::PBASIC_Y, Layout::PBASIC_W, Layout::PBASIC_H,
-            hWnd, reinterpret_cast<HMENU>(ID_GRP_PLAY), g_hInst, nullptr);
-        int bx = Layout::PBASIC_X + 20;
-        CreateWindowW(L"button", L"Load",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW1_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_LOAD), g_hInst, nullptr);
-        bx += Layout::PB_BTN_WIDTH + Layout::PB_BTN_GAP;
-        CreateWindowW(L"button", L"Play/Pause",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW1_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_PLAY), g_hInst, nullptr);
-        bx += Layout::PB_BTN_WIDTH + Layout::PB_BTN_GAP;
-        CreateWindowW(L"button", L"Restart",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW1_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_RESTART), g_hInst, nullptr);
-        bx = Layout::PBASIC_X + 20;
-        CreateWindowW(L"button", L"Skip+10",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW2_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_SKIP), g_hInst, nullptr);
-        bx += Layout::PB_BTN_WIDTH + Layout::PB_BTN_GAP;
-        CreateWindowW(L"button", L"Rew-10",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW2_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_REW), g_hInst, nullptr);
-        bx += Layout::PB_BTN_WIDTH + Layout::PB_BTN_GAP;
-        CreateWindowW(L"button", L"Speed++",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW2_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_SPEEDUP), g_hInst, nullptr);
-        bx += Layout::PB_BTN_WIDTH + Layout::PB_BTN_GAP;
-        CreateWindowW(L"button", L"Speed--",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW2_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_SPEEDDN), g_hInst, nullptr);
-        CreateWindowW(L"button", L"Midi2Key",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::PB_MIDI_QWERTY_X + 35, Layout::PB_MIDI_QWERTY_Y, 80, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_MIDI2QWERTY), g_hInst, nullptr);
-        CreateWindowW(L"button", L"MidiConnect",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            bx, Layout::PB_ROW1_Y, Layout::PB_BTN_WIDTH, Layout::PB_BTN_HEIGHT,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_MIDICONNECT), g_hInst, nullptr);
-        bx += Layout::PB_BTN_WIDTH + Layout::PB_BTN_GAP;
-        HWND cbMidiDev = CreateWindowW(L"combobox", nullptr,
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            Layout::PB_MIDI_QWERTY_X + 120, Layout::PB_MIDI_QWERTY_Y, 130, 200,
-            hWnd, reinterpret_cast<HMENU>(ID_CB_MIDIDEV), g_hInst, nullptr);
-        MIDIDeviceUI::PopulateMidiInDevices(cbMidiDev, g_selectedMidiDevice);
-        HWND cbMidiCh = CreateWindowW(L"combobox", nullptr,
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            Layout::PB_MIDI_QWERTY_X + 120, Layout::PB_ROW2_Y, 130, 200,
-            hWnd, reinterpret_cast<HMENU>(ID_CB_MIDICH), g_hInst, nullptr);
-        MIDIDeviceUI::PopulateChannelList(cbMidiCh, g_selectedMidiChannel);
-        CreateWindowW(L"static", L"0:00 / 0:00",
-            WS_CHILD | WS_VISIBLE | SS_CENTER,
-            Layout::PB_STATIC_TIME_X - 90, Layout::PB_STATIC_TIME_Y + 36,
-            Layout::PB_STATIC_TIME_W - 50, Layout::PB_STATIC_TIME_H,
-            hWnd, reinterpret_cast<HMENU>(ID_STATIC_TIME), g_hInst, nullptr);
-
-        // Advanced Group
-        CreateWindowW(L"button", L"Advanced",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            Layout::PADV_X, Layout::PADV_Y, Layout::PADV_W, Layout::PADV_H,
-            hWnd, reinterpret_cast<HMENU>(ID_GRP_ADV), g_hInst, nullptr);
-        int advx = Layout::PADV_X + 15;
-        int advy = Layout::PADV_Y + 25;
-        const int advBw = 80, advBh = 28, advGap = 5;
-        CreateWindowW(L"button", L"88-Key",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            advx, advy, advBw, advBh,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_88KEY), g_hInst, nullptr);
-        advx += (advBw + advGap);
-        CreateWindowW(L"button", L"AutoVol",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            advx, advy, advBw, advBh,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_VOLADJ), g_hInst, nullptr);
-        advx += (advBw + advGap);
-        CreateWindowW(L"button", L"Velocity",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            advx, advy, advBw, advBh,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_VELOCITY), g_hInst, nullptr);
-        advx += (advBw + advGap);
-        CreateWindowW(L"button", L"Sustain",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            advx, advy, advBw, advBh,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_SUSTAIN), g_hInst, nullptr);
-        advx += (advBw + advGap);
-        CreateWindowW(L"button", L"Transpose",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            advx, advy, advBw + 20, advBh,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_TRANSPOSE), g_hInst, nullptr);
-        advx += (advBw + 20 + advGap);
-        CreateWindowW(L"button", L"OutRange",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            advx, advy, advBw + 15, advBh,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_TRANSPOSEOUT), g_hInst, nullptr);
-        {
-            HWND hStaticSustainLbl = CreateWindowW(L"static", L"Sustain Cutoff:",
-                WS_CHILD | WS_VISIBLE,
-                Layout::PADV_X + 20, Layout::PADV_Y + 67,
-                100, 20,
-                hWnd, reinterpret_cast<HMENU>(ID_STATIC_SUSTAIN_LABEL), g_hInst, nullptr);
-            HWND hSustainSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
-                Layout::PADV_X + 115, Layout::PADV_Y + 61,
-                160, 30,
-                hWnd, reinterpret_cast<HMENU>(ID_SLIDER_SUSTAIN_CUTOFF), g_hInst, nullptr);
-            SendMessage(hSustainSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 127));
-            SendMessage(hSustainSlider, TBM_SETTICFREQ, 16, 0);
-            SendMessage(hSustainSlider, TBM_SETPOS, TRUE, g_sustainCutoff);
-            g_hSustainCutoffValueBox = CreateWindowExW(WS_EX_CLIENTEDGE,
-                L"edit",
-                L"64",
-                WS_CHILD | WS_VISIBLE | ES_READONLY | ES_CENTER,
-                Layout::PADV_X + 280, Layout::PADV_Y + 65,
-                35, 20,
-                hWnd, nullptr, g_hInst, nullptr);
-        }
-        CreateWindowW(L"combobox", nullptr,
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            advx - 53, advy + 38, 150, 200,
-            hWnd, reinterpret_cast<HMENU>(ID_CB_VELOCITY_CURVE), g_hInst, nullptr);
-        RefreshVelocityCurveCombo(hWnd);
-        HWND hStaticVelLbl = CreateWindowW(L"static", L"VelCurve:",
-            WS_CHILD | WS_VISIBLE,
-            advx - 125, advy + 41, 65, 20,
-            hWnd, reinterpret_cast<HMENU>(ID_STATIC_SUSTAIN_LABEL), g_hInst, nullptr);
-
-        // Config Group
-        CreateWindowW(L"button", L"Config",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            Layout::CFG_X, Layout::CFG_Y, Layout::CFG_W, Layout::CFG_H,
-            hWnd, reinterpret_cast<HMENU>(ID_GRP_CONFIG), g_hInst, nullptr);
-
-        HWND hChkAlwaysOnTop = CreateWindowW(L"button", L"Always On Top",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            Layout::CFG_X + 10, Layout::CFG_Y + 25, 120, 20,
-            hWnd, reinterpret_cast<HMENU>(ID_CHK_TOP), g_hInst, nullptr);
-        bool alwaysOnTop = midi::Config::getInstance().ui.alwaysOnTop;
-        SendMessage(hChkAlwaysOnTop, BM_SETCHECK, alwaysOnTop ? BST_CHECKED : BST_UNCHECKED, 0);
-        SetAlwaysOnTop(hWnd, alwaysOnTop);
-
-        HWND hChkRandomSong = CreateWindowW(L"button", L"Shuffle Play",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            Layout::CFG_X + 140, Layout::CFG_Y + 25, 115, 20,
-            hWnd, reinterpret_cast<HMENU>(ID_CHK_RANDOM_SONG), g_hInst, nullptr);
-        SendMessage(hChkRandomSong, BM_SETCHECK, g_randomSongEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
-
-        HWND hStaticOpacity = CreateWindowW(L"static", L"Opacity:",
-            WS_CHILD | WS_VISIBLE,
-            Layout::CFG_X + 255, Layout::CFG_Y + 25, 60, 20,
-            hWnd, nullptr, g_hInst, nullptr);
-
-        HWND hOpacitySlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-            WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
-            Layout::CFG_X + 310, Layout::CFG_Y + 20, 120, 30,
-            hWnd, reinterpret_cast<HMENU>(ID_SLIDER_OPACITY), g_hInst, nullptr);
-        SendMessage(hOpacitySlider, TBM_SETRANGE, TRUE, MAKELPARAM(100, 255));
-        SendMessage(hOpacitySlider, TBM_SETTICFREQ, 15, 0);
-        SendMessage(hOpacitySlider, TBM_SETPOS, TRUE, 255);
-
-        g_hOpacityIndicatorBox = CreateWindowExW(WS_EX_CLIENTEDGE,
-            L"edit",
-            L"255",
-            WS_CHILD | WS_VISIBLE | ES_READONLY | ES_CENTER,
-            Layout::CFG_X + 445, Layout::CFG_Y + 25, 40, 20,
-            hWnd, nullptr, g_hInst, nullptr);
-        HWND hPrevSongBtn = CreateWindowW(L"button", L"Prev",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::CFG_X + 495, Layout::CFG_Y + 25, 40, 20,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_PREV_SONG), g_hInst, nullptr);
-        HWND hNextSongBtn = CreateWindowW(L"button", L"Next",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::CFG_X + 495 + 45, Layout::CFG_Y + 25, 40, 20,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_NEXT_SONG), g_hInst, nullptr);
-
-        // Details Group
-        CreateWindowW(L"button", L"Details",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            Layout::DET_X, Layout::DET_Y, Layout::DET_W, Layout::DET_H,
-            hWnd, reinterpret_cast<HMENU>(ID_GRP_DETAILS), g_hInst, nullptr);
-        g_editDetails = CreateWindowW(L"edit", L"",
-            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER,
-            Layout::DET_X + 10, Layout::DET_Y + 20, Layout::DET_W - 20, Layout::DET_H - 30,
-            hWnd, reinterpret_cast<HMENU>(ID_EDIT_DETAILS), g_hInst, nullptr);
-
-        // Tracks Group
-        g_trackControl.Create(hWnd, Layout::TRK_X, Layout::TRK_Y, Layout::TRK_W, Layout::TRK_H - 2);
-
-        // Log Group
-        CreateWindowW(L"button", L"Log",
-            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            Layout::LOG_X, Layout::LOG_Y, Layout::LOG_W, Layout::LOG_H,
-            hWnd, reinterpret_cast<HMENU>(ID_GRP_LOG), g_hInst, nullptr);
-        HWND editLog = CreateWindowW(L"edit", L"",
-            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER,
-            Layout::LOG_X + 10, Layout::LOG_Y + 20, Layout::LOG_W - 100, Layout::LOG_H - 30,
-            hWnd, reinterpret_cast<HMENU>(ID_EDIT_LOG), g_hInst, nullptr);
-        CreateWindowW(L"button", L"Clear Log",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::LOG_X + Layout::LOG_W - 80, Layout::LOG_Y + 25, 70, 25,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_CLEARLOG), g_hInst, nullptr);
-        CreateWindowW(L"button", L"Refresh MIDI",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::LOG_X + Layout::LOG_W - 80, Layout::LOG_Y + 55, 70, 25,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH_MIDI), g_hInst, nullptr);
-        CreateWindowW(L"button", L"Edit V-Curve",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::LOG_X + Layout::LOG_W - 80, Layout::LOG_Y + 85, 70, 25,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_VLCURVE), g_hInst, nullptr);
-        CreateWindowW(L"button", L"Ref V-List",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::LOG_X + Layout::LOG_W - 80, Layout::LOG_Y + 115, 70, 25,
-            hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH_VCURVE), g_hInst, nullptr);
-
-        // Initialize Toggle States
-        std::vector<int> toggles = { ID_BTN_88KEY, ID_BTN_VOLADJ, ID_BTN_VELOCITY, ID_BTN_SUSTAIN, ID_BTN_TRANSPOSEOUT, ID_BTN_MIDI2QWERTY };
-        for (int t : toggles)
-            g_toggleStates[t] = false;
-        if (g_player && g_player->eightyEightKeyModeActive)
-            g_toggleStates[ID_BTN_88KEY] = true;
-
-        // Initial Setup
-        ScanMidiFolder();
-        SortMidiItems();
-        PopulateMidiList();
-        SetTimer(hWnd, IDT_TIMELEFT_TIMER, 200, nullptr);
-        g_guiReady.store(true);
-        PostMessage(hWnd, WM_UPDATE_LOG, 0, 0);
-        UpdateWindowFocusability();
-
-        return 0;
-    }
-
-    case WM_ERASEBKGND:
-        return 1;
-
-    case WM_PAINT:
-    {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hWnd, &ps);
-        EndPaint(hWnd, &ps);
-        return 0;
-    }
-
-    case WM_DRAWITEM:
-    {
-        const DRAWITEMSTRUCT* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-        if (dis->CtlType == ODT_BUTTON) {
-            DrawFancyButton(dis);
-            return TRUE;
-        }
-        break;
-    }
-
-    case WM_HSCROLL:
-    {
-        HWND hwCtrl = reinterpret_cast<HWND>(lParam);
-        int idCtrl = GetDlgCtrlID(hwCtrl);
-        if (idCtrl == ID_SLIDER_SUSTAIN_CUTOFF) {
-            switch (LOWORD(wParam)) {
-            case TB_THUMBPOSITION:
-            case TB_THUMBTRACK:
-            case TB_LINEUP:
-            case TB_LINEDOWN:
-            case TB_PAGEUP:
-            case TB_PAGEDOWN:
-            case TB_ENDTRACK:
-            {
-                g_sustainCutoff = static_cast<int>(SendMessage(hwCtrl, TBM_GETPOS, 0, 0));
-                wchar_t buf[16];
-                swprintf_s(buf, L"%d", g_sustainCutoff);
-                SetWindowTextW(g_hSustainCutoffValueBox, buf);
-                break;
-            }
-            }
-        }
-        else if (idCtrl == ID_SLIDER_OPACITY) {
-            int opacity = static_cast<int>(SendMessage(hwCtrl, TBM_GETPOS, 0, 0));
-            if (opacity < 100) opacity = 100;
-            SetLayeredWindowAttributes(g_hMainWnd, 0, static_cast<BYTE>(opacity), LWA_ALPHA);
-            wchar_t opacityText[16];
-            swprintf_s(opacityText, L"%d", opacity);
-            SetWindowTextW(g_hOpacityIndicatorBox, opacityText);
-        }
-        return 0;
-    }
-
-    case WM_UPDATE_LOG:
-    {
-        std::string data;
-        {
-            std::lock_guard<std::mutex> lk(g_logMutex);
-            data = g_logBuffer;
-        }
-        std::string replaced;
-        replaced.reserve(data.size() + 50);
-        for (char c : data) {
-            if (c == '\n')
-                replaced.append("\r\n");
-            else
-                replaced.push_back(c);
-        }
-        int wideLen = MultiByteToWideChar(CP_UTF8, 0, replaced.c_str(), -1, nullptr, 0);
-        if (wideLen > 0) {
-            std::wstring wreplaced(wideLen, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, replaced.c_str(), -1, &wreplaced[0], wideLen);
-            if (!wreplaced.empty() && wreplaced.back() == L'\0')
-                wreplaced.pop_back();
-            HWND editLog = GetDlgItem(hWnd, ID_EDIT_LOG);
-            SetWindowTextW(editLog, wreplaced.c_str());
-            SendMessage(editLog, EM_LINESCROLL, 0, 999999);
-        }
-        return 0;
-    }
-
-    case WM_COMMAND:
-    {
-        int id = LOWORD(wParam);
-        int code = HIWORD(wParam);
-        switch (id) {
-        case ID_CB_SORT:
-            if (code == CBN_SELCHANGE) {
-                HWND cb = GetDlgItem(hWnd, ID_CB_SORT);
-                int sel = static_cast<int>(SendMessage(cb, CB_GETCURSEL, 0, 0));
-                SortMidiItems();
-                PopulateMidiList();
-            }
-            break;
-
-        case ID_BTN_REFRESH:
-            if (code == BN_CLICKED) {
-                ScanMidiFolder();
-                SortMidiItems();
-                PopulateMidiList();
-                std::wcout << L"[Refresh] Scanned current MIDI folder: " << g_currentMidiDir.wstring() << L"\n";
-            }
-            break;
-
-        case ID_CHK_TOP:
-            if (code == BN_CLICKED) {
-                HWND hChk = reinterpret_cast<HWND>(lParam);
-                bool top = (SendMessage(hChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                SetAlwaysOnTop(hWnd, top);
-                midi::Config::getInstance().ui.alwaysOnTop = top;
-                try {
-                    midi::Config::getInstance().saveToFile("config.json");
-                    std::cout << "[Config] Saved Always on Top state: " << (top ? "ENABLED" : "DISABLED") << "\n";
-                }
-                catch (const std::exception& ex) {
-                    std::cerr << "[Config] Failed to save config: " << ex.what() << "\n";
-                }
-            }
-            break;
-
-        case ID_CHK_RANDOM_SONG:
-            if (code == BN_CLICKED) {
-                HWND hChk = reinterpret_cast<HWND>(lParam);
-                LRESULT state = SendMessage(hChk, BM_GETCHECK, 0, 0);
-                if (state == BST_CHECKED) {
-                    if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                        MessageBoxA(hWnd, "Random Song cannot be enabled while MIDI2Key or MIDIConnect is active.",
-                            "Conflict", MB_OK | MB_ICONWARNING);
-                        SendMessage(hChk, BM_SETCHECK, BST_UNCHECKED, 0);
-                        g_randomSongEnabled = false;
-                    }
-                    else {
-                        g_randomSongEnabled = true;
-                    }
-                }
-                else {
-                    g_randomSongEnabled = false;
-                }
-            }
-            break;
-
-        case ID_BTN_CLEARLOG:
-            if (code == BN_CLICKED) {
-                HWND editLog = GetDlgItem(hWnd, ID_EDIT_LOG);
-                int ret = MessageBoxA(hWnd, "Are you sure you want to clear the log?\nThis cannot be undone.",
-                    "Confirm Clear", MB_YESNO | MB_ICONQUESTION);
-                if (ret == IDYES) {
-                    ClearLog(editLog);
-                    std::cout << "[LOG] Cleared.\n";
-                }
-            }
-            break;
-
-        case ID_BTN_REFRESH_VCURVE:
-            if (code == BN_CLICKED) {
-                RefreshVelocityCurveCombo(hWnd);
-                std::cout << "[VELOCITY] Velocity curves refreshed.\n";
-            }
-            break;
-
-        case ID_BTN_REFRESH_MIDI:
-            if (code == BN_CLICKED) {
-                std::cout << "[MIDI Devices] Refreshing device list...\n";
-                if (g_midi2key && g_midi2key->IsActive())
-                    g_midi2key->CloseDevice();
-                int previousDevice = g_selectedMidiDevice;
-                HWND cbMidiDev = GetDlgItem(hWnd, ID_CB_MIDIDEV);
-                MIDIDeviceUI::PopulateMidiInDevices(cbMidiDev, g_selectedMidiDevice);
-                if (g_midi2key && g_midi2key->IsActive() && g_selectedMidiDevice >= 0) {
-                    if (MIDIDeviceUI::TestDeviceAccess(g_selectedMidiDevice))
-                        g_midi2key->OpenDevice(g_selectedMidiDevice);
-                    else
-                        std::cout << "[MIDI Devices] Cannot reopen device - no longer accessible\n";
-                }
-            }
-            break;
-
-        case ID_BTN_LOAD:
-            if (code == BN_CLICKED) {
-                if (!g_player)
-                    break;
-                try {
-                    std::cout << "[Load] Initiating load process...\n";
-                    g_player->should_stop.store(true, std::memory_order_release);
-                    SetEvent(g_player->command_event);
-                    {
-                        std::lock_guard<std::mutex> lock(g_player->playback_cv_mutex);
-                        g_player->playback_cv.notify_all();
-                    }
-                    if (g_player->playback_thread && g_player->playback_thread->joinable()) {
-                        std::cout << "[Load] Joining playback thread...\n";
-                        g_player->playback_thread->join();
-                        std::cout << "[Load] Playback thread joined.\n";
-                    }
-                    g_player->playback_thread.reset();
-
-                    g_player->paused.store(true, std::memory_order_release);
-                    g_player->release_all_keys();
-                    g_player->note_events.clear();
-                    g_player->tempo_changes.clear();
-                    g_player->timeSignatures.clear();
-                    g_player->trackMuted.clear();
-                    g_player->trackSoloed.clear();
-
-                    std::wstring wpath = GetSelectedMidiFullPath();
-                    if (wpath.empty()) {
-                        std::cout << "[Load] No MIDI file selected.\n";
-                        SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), L"0:00 / 0:00");
-                        break;
-                    }
-
-                    int len = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), static_cast<int>(wpath.size()), nullptr, 0, nullptr, nullptr);
-                    std::string path(len, '\0');
-                    WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), static_cast<int>(wpath.size()), &path[0], len, nullptr, nullptr);
-
-                    MidiParser parser;
-                    g_player->midi_file = parser.parse(path);
-                    g_player->process_tracks(g_player->midi_file);
-                    g_player->midiFileSelected.store(true, std::memory_order_release);
-
-                    g_player->should_stop.store(false, std::memory_order_release);
-                    g_player->paused.store(true, std::memory_order_release);
-                    g_player->playback_started.store(false, std::memory_order_release);
-                    constexpr auto initialBuffer = std::chrono::milliseconds(50);
-                    g_player->total_adjusted_time = -initialBuffer;
-                    g_player->current_speed = 1.0;
-                    g_player->buffer_index.store(0, std::memory_order_release);
-                    unsigned long long now_tsc = __rdtsc();
-                    g_player->playback_start_time = now_tsc;
-                    g_player->last_resume_tsc = now_tsc;
-
-                    size_t track_count = g_player->midi_file.tracks.size();
-                    g_player->trackMuted.resize(track_count);
-                    g_player->trackSoloed.resize(track_count);
-                    for (size_t i = 0; i < track_count; ++i) {
-                        g_player->trackMuted[i] = std::make_shared<std::atomic<bool>>(false);
-                        g_player->trackSoloed[i] = std::make_shared<std::atomic<bool>>(false);
-                    }
-
-                    g_totalSongSeconds = 0.0;
-                    if (!g_player->note_events.empty()) {
-                        auto last_event = std::max_element(
-                            g_player->note_events.begin(),
-                            g_player->note_events.end(),
-                            [](auto const& a, auto const& b) { return a.time < b.time; }
-                        );
-                        if (last_event != g_player->note_events.end()) {
-                            g_totalSongSeconds = static_cast<double>(last_event->time.count()) / 1e9 + 0.5;
-                        }
-                    }
-
-                    wchar_t timeStr[32];
-                    int totalMins = static_cast<int>(g_totalSongSeconds) / 60;
-                    int totalSecs = static_cast<int>(g_totalSongSeconds) % 60;
-                    swprintf_s(timeStr, L"0:00 / %d:%02d", totalMins, totalSecs);
-                    SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), timeStr);
-
-                    UpdateMidiDetails();
-                    UpdateTrackInfo();
-
-                    if (g_toggleStates[ID_BTN_VOLADJ]) {
-                        FocusRobloxWindow();
-                        g_player->calibrate_volume();
-                    }
-
-                    std::cout << "[Load] Loaded: " << path << "\n";
-                }
-                catch (const std::exception& e) {
-                    std::cout << "[Load] Error: " << e.what() << "\n";
-                    SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), L"0:00 / 0:00");
-                    UpdateMidiDetails();
-                    UpdateTrackInfo();
-                }
-            }
-            break;
-
-        case ID_LB_MIDI:
-            if (code == LBN_DBLCLK) {
-                int sel = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
-                if (sel != LB_ERR && sel >= 0 && sel < static_cast<int>(g_midiItems.size())) {
-                    const MidiItem& item = g_midiItems[sel];
-                    if (item.isFolder) {
-                        if (item.name == L"..")
-                            g_currentMidiDir = std::filesystem::path(g_currentMidiDir).parent_path();
-                        else
-                            g_currentMidiDir = item.fullPath;
-                        ScanMidiFolder();
-                        SortMidiItems();
-                        PopulateMidiList();
-                    }
-                    else {
-                        SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_LOAD, BN_CLICKED),
-                            reinterpret_cast<LPARAM>(GetDlgItem(hWnd, ID_BTN_LOAD)));
-                    }
-                }
-            }
-            break;
-
-        case WM_CLOSE:
-            DestroyWindow(hWnd);
-            break;
-
-        case ID_BTN_VLCURVE:
-            if (code == BN_CLICKED) {
-                auto editor = new VelocityCurveEditor();
-                editor->Create(hWnd);
-            }
-            break;
-
-        case ID_BTN_PLAY:
-            if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "Please load a MIDI file first.", "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                FocusRobloxWindow();
-                g_player->toggle_play_pause();
-            }
-            break;
-
-        case ID_BTN_MIDICONNECT:
-            if (code == BN_CLICKED) {
-                if (g_toggleStates[ID_BTN_MIDI2QWERTY]) {
-                    MessageBoxA(hWnd, "Please disable MIDI->QWERTY mode first.", "Conflict", MB_OK | MB_ICONWARNING);
-                    break;
-                }
-                g_toggleStates[ID_BTN_MIDICONNECT] = !g_toggleStates[ID_BTN_MIDICONNECT];
-                bool newState = g_toggleStates[ID_BTN_MIDICONNECT];
-                InvalidateRect(GetDlgItem(hWnd, ID_BTN_MIDICONNECT), nullptr, TRUE);
-                if (newState) {
-                    if (!g_midiConnect)
-                        g_midiConnect = std::make_unique<MIDIConnect>();
-                    g_midiConnect->SetActive(true);
-                    g_midiConnect->OpenDevice(g_selectedMidiDevice);
-                    std::cout << "[MidiConnect] ENABLED\n";
-                    FocusRobloxWindow();
-                    g_midiConnect->ReleaseAllNumpadKeys();
-                }
-                else {
-                    if (g_midiConnect) {
-                        g_midiConnect->SetActive(false);
-                        g_midiConnect->CloseDevice();
-                    }
-                    std::cout << "[MidiConnect] DISABLED\n";
-                }
-                UpdateWindowFocusability();
-            }
-            break;
-
-        case ID_BTN_RESTART:
-            if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "Please load a MIDI file first.", "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                FocusRobloxWindow();
-                g_player->restart_song();
-            }
-            break;
-
-        case ID_BTN_SKIP:
-            if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "Please load a MIDI file first.", "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                using namespace std::chrono_literals;
-                g_player->skip(10s);
-            }
-            break;
-
-        case ID_BTN_REW:
-            if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "Please load a MIDI file first.", "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                using namespace std::chrono_literals;
-                g_player->rewind(10s);
-            }
-            break;
-
-        case ID_BTN_SPEEDUP:
-            if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "Please load a MIDI file first.", "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                g_player->speed_up();
-            }
-            break;
-
-        case ID_BTN_SPEEDDN:
-            if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "Please load a MIDI file first.", "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                g_player->slow_down();
-            }
-            break;
-
-        case ID_BTN_MIDI2QWERTY:
-            if (code == BN_CLICKED) {
-                if (g_toggleStates[ID_BTN_MIDICONNECT]) {
-                    MessageBoxA(hWnd, "Please disable MidiConnect mode first.", "Conflict", MB_OK | MB_ICONWARNING);
-                    break;
-                }
-                g_toggleStates[ID_BTN_MIDI2QWERTY] = !g_toggleStates[ID_BTN_MIDI2QWERTY];
-                bool newState = g_toggleStates[ID_BTN_MIDI2QWERTY];
-                InvalidateRect(GetDlgItem(hWnd, ID_BTN_MIDI2QWERTY), nullptr, TRUE);
-                if (newState) {
-                    if (!g_midi2key)
-                        g_midi2key = std::make_unique<MIDI2Key>(g_player);
-                    g_midi2key->SetActive(true);
-                    g_midi2key->OpenDevice(g_selectedMidiDevice);
-                    std::cout << "[MIDI->QWERTY] ENABLED\n";
-                    std::cout << "[WARNING] DO NOT use MIDI2Key with spam / black MIDIs or similar\n";
-                    FocusRobloxWindow();
-                    g_player->release_all_keys();
-                }
-                else {
-                    if (g_midi2key) {
-                        g_midi2key->SetActive(false);
-                        g_midi2key->CloseDevice();
-                    }
-                    std::cout << "[MIDI->QWERTY] DISABLED\n";
-                }
-                UpdateWindowFocusability();
-            }
-            break;
-
-        case ID_CB_VELOCITY_CURVE:
-            if (code == CBN_SELCHANGE) {
-                if (!g_player) break;
-                HWND cb = GetDlgItem(hWnd, ID_CB_VELOCITY_CURVE);
-                int sel = static_cast<int>(SendMessage(cb, CB_GETCURSEL, 0, 0));
-                g_player->setVelocityCurveIndex(sel);
-                auto& config = midi::Config::getInstance();
-                if (sel < 5)
-                    config.playback.velocityCurve = static_cast<midi::VelocityCurveType>(sel);
-                else
-                    config.playback.velocityCurve = midi::VelocityCurveType::Custom;
-                std::cout << "[VELOCITY] Changed curve to: "
-                    << (sel < 5 ? g_player->getVelocityCurveName(config.playback.velocityCurve)
-                        : config.playback.customVelocityCurves[sel - 5].name) << "\n";
-
-                if (g_midiConnect && g_midiConnect->IsActive()) {
-                    g_midiConnect->CloseDevice();
-                    g_midiConnect->OpenDevice(g_selectedMidiDevice);
-                }
-                if (g_midi2key && g_midi2key->IsActive()) {
-                    g_midi2key->CloseDevice();
-                    g_midi2key->OpenDevice(g_selectedMidiDevice);
-                }
-            }
-            break;
-
-        case ID_CB_MIDIDEV:
-            if (code == CBN_SELCHANGE) {
-                HWND cb = GetDlgItem(hWnd, ID_CB_MIDIDEV);
-                int sel = static_cast<int>(SendMessage(cb, CB_GETCURSEL, 0, 0));
-                g_selectedMidiDevice = sel;
-                if (g_midi2key && g_midi2key->IsActive()) {
-                    g_midi2key->CloseDevice();
-                    g_midi2key->OpenDevice(sel);
-                }
-                if (g_midiConnect && g_midiConnect->IsActive()) {
-                    g_midiConnect->CloseDevice();
-                    g_midiConnect->OpenDevice(sel);
-                }
-            }
-            break;
-
-        case ID_CB_MIDICH:
-            if (code == CBN_SELCHANGE) {
-                HWND cb = GetDlgItem(hWnd, ID_CB_MIDICH);
-                int sel = static_cast<int>(SendMessage(cb, CB_GETCURSEL, 0, 0));
-                g_selectedMidiChannel = (sel <= 0 ? -1 : sel - 1);
-            }
-            break;
-
-        case ID_BTN_PREV_SONG:
-            if (code == BN_CLICKED) {
-                int sel = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
-                int count = static_cast<int>(SendMessage(g_lbMidi, LB_GETCOUNT, 0, 0));
-                int newSel = sel;
-                for (int i = sel - 1; i >= 0; i--) {
-                    if (!g_midiItems[i].isFolder) {
-                        newSel = i;
-                        break;
-                    }
-                }
-                if (newSel == sel) {
-                    for (int i = count - 1; i >= 0; i--) {
-                        if (!g_midiItems[i].isFolder) {
-                            newSel = i;
-                            break;
-                        }
-                    }
-                }
-                SendMessage(g_lbMidi, LB_SETCURSEL, newSel, 0);
-                PostMessage(g_hMainWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_LOAD, BN_CLICKED),
-                    reinterpret_cast<LPARAM>(GetDlgItem(g_hMainWnd, ID_BTN_LOAD)));
-                PostMessage(g_hMainWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_PLAY, BN_CLICKED),
-                    reinterpret_cast<LPARAM>(GetDlgItem(g_hMainWnd, ID_BTN_PLAY)));
-            }
-            break;
-
-        case ID_BTN_NEXT_SONG:
-            if (code == BN_CLICKED) {
-                int sel = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
-                int count = static_cast<int>(SendMessage(g_lbMidi, LB_GETCOUNT, 0, 0));
-                int newSel = sel;
-                for (int i = sel + 1; i < count; i++) {
-                    if (!g_midiItems[i].isFolder) {
-                        newSel = i;
-                        break;
-                    }
-                }
-                if (newSel == sel) {
-                    for (int i = 0; i < count; i++) {
-                        if (!g_midiItems[i].isFolder) {
-                            newSel = i;
-                            break;
-                        }
-                    }
-                }
-                SendMessage(g_lbMidi, LB_SETCURSEL, newSel, 0);
-                PostMessage(g_hMainWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_LOAD, BN_CLICKED),
-                    reinterpret_cast<LPARAM>(GetDlgItem(g_hMainWnd, ID_BTN_LOAD)));
-                PostMessage(g_hMainWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_PLAY, BN_CLICKED),
-                    reinterpret_cast<LPARAM>(GetDlgItem(g_hMainWnd, ID_BTN_PLAY)));
-            }
-            break;
-
-        default:
-            if (IsToggleButtonID(id) && code == BN_CLICKED && id != ID_BTN_MIDI2QWERTY) {
-                g_toggleStates[id] = !g_toggleStates[id];
-                InvalidateRect(GetDlgItem(hWnd, id), nullptr, TRUE);
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire) &&
-                    !(g_midi2key && g_midi2key->IsActive()) &&
-                    !(g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Load a MIDI file first or enable MIDI->QWERTY to use advanced features.",
-                        "Warning", MB_OK | MB_ICONWARNING);
-                    g_toggleStates[id] = !g_toggleStates[id];
-                    InvalidateRect(GetDlgItem(hWnd, id), nullptr, TRUE);
-                    break;
-                }
-                switch (id) {
-                case ID_BTN_88KEY:
-                    g_player->toggle_88_key_mode();
-                    break;
-                case ID_BTN_VOLADJ:
-                {
-                    bool newState = g_toggleStates[ID_BTN_VOLADJ];
-                    g_player->toggle_volume_adjustment();
-                    if (newState) {
-                        FocusRobloxWindow();
-                        g_player->calibrate_volume();
-                    }
-                    break;
-                }
-                case ID_BTN_VELOCITY:
-                    g_player->toggle_velocity_keypress();
-                    break;
-                case ID_BTN_SUSTAIN:
-                    g_player->toggleSustainMode();
-                    break;
-                case ID_BTN_TRANSPOSEOUT:
-                    g_player->toggle_out_of_range_transpose();
-                    break;
-                }
-            }
-            else if (id == ID_BTN_TRANSPOSE && code == BN_CLICKED) {
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire) &&
-                    !(g_midi2key && g_midi2key->IsActive()) &&
-                    !(g_midiConnect && g_midiConnect->IsActive())) {
-                    MessageBoxA(hWnd, "Load a MIDI file first or enable MIDI->QWERTY to use this feature.",
-                        "Error", MB_OK | MB_ICONERROR);
-                    break;
-                }
-                if (!g_player->midiFileSelected.load(std::memory_order_acquire)) {
-                    MessageBoxA(hWnd, "No loaded MIDI file to analyze for transpose suggestions.\n"
-                        "But if you only need the function for direct key press in 'midi2key' mode, ignore this message.",
-                        "Info", MB_OK | MB_ICONINFORMATION);
-                }
-                int best = g_player->toggle_transpose_adjustment();
-                char buf[128];
-                sprintf_s(buf, "Suggested transpose: [%d]", best);
-                MessageBoxA(hWnd, buf, "Transpose Suggestion", MB_OK | MB_ICONINFORMATION);
-            }
-            break;
-        }
-        break;
-    }
-
-    case WM_CTLCOLORSTATIC:
-    {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        HWND ctrl = reinterpret_cast<HWND>(lParam);
-        int cid = GetDlgCtrlID(ctrl);
-        if (cid == ID_EDIT_LOG || cid == ID_EDIT_TRACKS || cid == ID_EDIT_DETAILS) {
-            static HFONT hMonospaceFont = nullptr;
-            if (!hMonospaceFont) {
-                LOGFONT lf = {};
-                lf.lfHeight = -14;
-                wcscpy_s(lf.lfFaceName, L"Consolas");
-                hMonospaceFont = CreateFontIndirect(&lf);
-            }
-            if (cid == ID_EDIT_LOG) {
-                static HBRUSH hbrLogBg = nullptr;
-                if (!hbrLogBg)
-                    hbrLogBg = CreateSolidBrush(RGB(230, 255, 230));
-                SetBkMode(hdc, OPAQUE);
-                SetBkColor(hdc, RGB(230, 255, 230));
-                SetTextColor(hdc, RGB(40, 80, 40));
-                SelectObject(hdc, hMonospaceFont);
-                return reinterpret_cast<LRESULT>(hbrLogBg);
+        if (HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+            HANDLE tok = nullptr;
+            if (OpenProcessToken(proc, TOKEN_QUERY, &tok)) {
+                theirs = token_integrity(tok, otherOk);
+                CloseHandle(tok);
             }
             else {
-                static HBRUSH hbrWhite = (HBRUSH)GetStockObject(WHITE_BRUSH);
-                SetBkMode(hdc, OPAQUE);
-                SetBkColor(hdc, RGB(255, 255, 255));
-                SetTextColor(hdc, RGB(0, 0, 0));
-                SelectObject(hdc, hMonospaceFont);
-                return reinterpret_cast<LRESULT>(hbrWhite);
+                denied = GetLastError() == ERROR_ACCESS_DENIED;
             }
+            CloseHandle(proc);
         }
-        SetBkMode(hdc, TRANSPARENT);
-        static HBRUSH hbrWhite = (HBRUSH)GetStockObject(WHITE_BRUSH);
-        return reinterpret_cast<LRESULT>(hbrWhite);
+        if (!selfOk || mine >= SECURITY_MANDATORY_HIGH_RID)
+            return;
+        if ((otherOk && theirs > mine) || (!otherOk && denied))
+            say("[Keys] %s is running as administrator, so Windows blocks the keys MIDI++ sends to it. "
+                "Start MIDI++ as administrator too.", window_title(target).c_str());
     }
 
-    case WM_CTLCOLOREDIT:
-    {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        HWND ctrl = reinterpret_cast<HWND>(lParam);
-        int cid = GetDlgCtrlID(ctrl);
-        if (cid == ID_EDIT_LOG || cid == ID_EDIT_TRACKS || cid == ID_EDIT_DETAILS) {
-            SendMessage(hWnd, WM_CTLCOLORSTATIC, wParam, lParam);
-            return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+    void aim(const char* what) {
+        HWND t = cfg().playback.gameWindowOnly ? pick_target() : nullptr;
+        input::set_guard(cfg().playback.gameWindowOnly);
+        input::set_target(t);
+        if (!t) {
+            if (cfg().playback.gameWindowOnly)
+                say("[Keys] No game window found. Click into the game and press %s.",
+                    input::key_label(cfg().hotkeys.PLAY_PAUSE_KEY).c_str());
+            return;
         }
-        return DefWindowProc(hWnd, msg, wParam, lParam);
+        out::set_layout(GetKeyboardLayout(GetWindowThreadProcessId(t, nullptr)));
+        if (IsIconic(t))
+            ShowWindow(t, SW_RESTORE);
+        if (root(GetForegroundWindow()) != t)
+            SetForegroundWindow(t);
+        say("[Keys] %s into: %s", what, window_title(t).c_str());
+        check_elevation(t);
     }
-    case WM_TIMER:
-    {
-        if (wParam == IDT_TIMELEFT_TIMER) {
-            auto now = std::chrono::steady_clock::now();
-            bool shouldUpdate = (now - g_lastTimeUpdate) >= TIME_UPDATE_INTERVAL;
-            static bool lastPlaybackState = false;
-            bool currentPlaybackState = g_player && !g_player->paused.load(std::memory_order_relaxed);
-            if (currentPlaybackState != lastPlaybackState) {
-                shouldUpdate = true;
-                lastPlaybackState = currentPlaybackState;
-            }
-            if (!shouldUpdate)
-                return 0;
-            if (!g_player || !g_player->midiFileSelected.load(std::memory_order_relaxed)) {
-                static bool lastWasDefault = false;
-                if (!lastWasDefault) {
-                    SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), L"0:00 / 0:00");
-                    lastWasDefault = true;
-                }
-                UpdateWindowFocusability();
-                return 0;
-            }
-            static wchar_t timeStr[32];
-            g_lastTimeUpdate = now;
-            double currentSeconds = 0.0;
-            if (!g_player->paused.load(std::memory_order_relaxed))
-                currentSeconds = std::chrono::duration<double>(g_player->get_adjusted_time()).count();
+
+    std::wstring fmt_time(int64_t ns) {
+        int s = static_cast<int>(std::max<int64_t>(0, ns) / 1'000'000'000);
+        wchar_t buf[32];
+        if (s >= 3600)
+            swprintf_s(buf, L"%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60);
+        else
+            swprintf_s(buf, L"%d:%02d", s / 60, s % 60);
+        return buf;
+    }
+
+    bool playing() { return g.player.playing(); }
+
+    bool system_dark() {
+        DWORD light = 1, size = sizeof(light);
+        RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
+        return light == 0;
+    }
+
+    const wchar_t* output_label() {
+        const auto& p = cfg().playback;
+        return p.output == midi::OutputMode::MidiConnect ? L"Out: MidiConnect" : p.typedKeys ? L"Out: Typed" : L"Out: Keys";
+    }
+
+    bool is_on(int id) {
+        const auto& p = cfg().playback;
+        switch (id) {
+        case ID_BTN_88KEY: return p.keys88;
+        case ID_BTN_VOLADJ: return p.autoVolume;
+        case ID_BTN_VELOCITY: return p.velocityKeys;
+        case ID_BTN_SUSTAIN: return p.sustain != midi::SustainMode::Ignore;
+        case ID_BTN_TRANSPOSEOUT: return p.outOfRange;
+        case ID_BTN_LEGIT: return cfg().legit.ENABLED;
+        case ID_BTN_MIDI2QWERTY: return live::active() && live::mode() == out::Mode::Keys;
+        case ID_BTN_MIDICONNECT: return live::active() && live::mode() == out::Mode::MidiConnect;
+        case ID_BTN_PLAY: return playing();
+        case ID_CHK_SHUFFLE: return g.shuffle;
+        case ID_CHK_GAME: return p.gameWindowOnly;
+        case ID_CHK_TOP: return cfg().ui.alwaysOnTop;
+        case ID_CHK_DARK: return ui::dark();
+        default: return false;
+        }
+    }
+
+    void redraw(int id) {
+        InvalidateRect(GetDlgItem(g.wnd, id), nullptr, TRUE);
+    }
+
+    void update_focusability() {
+        bool noActivate = live::active() || playing();
+        bool now = playing();
+        if (now != g.wasPlaying) {
+            g.wasPlaying = now;
+            SetDlgItemTextW(g.wnd, ID_BTN_PLAY, now ? L"Pause" : L"Play");
+            redraw(ID_BTN_PLAY);
+        }
+        LONG ex = GetWindowLongW(g.wnd, GWL_EXSTYLE);
+        if (((ex & WS_EX_NOACTIVATE) != 0) == noActivate)
+            return;
+        ex = noActivate ? (ex | WS_EX_NOACTIVATE) : (ex & ~WS_EX_NOACTIVATE);
+        SetWindowLongW(g.wnd, GWL_EXSTYLE, ex);
+        SetWindowPos(g.wnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+
+    void draw_star(HDC hdc, int cx, int cy, int r, COLORREF c) {
+        POINT pts[10];
+        for (int i = 0; i < 10; ++i) {
+            double a = -1.5707963 + i * 0.6283185;
+            double rr = (i & 1) ? r * 0.45 : r;
+            pts[i] = { cx + static_cast<LONG>(std::lround(std::cos(a) * rr)), cy + static_cast<LONG>(std::lround(std::sin(a) * rr)) };
+        }
+        HBRUSH b = CreateSolidBrush(c);
+        HPEN pen = CreatePen(PS_SOLID, 1, c);
+        HGDIOBJ ob = SelectObject(hdc, b), op = SelectObject(hdc, pen);
+        Polygon(hdc, pts, 10);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(b);
+        DeleteObject(pen);
+    }
+
+    void draw_folder(HDC hdc, int x, int y, int w, int h, COLORREF c) {
+        HBRUSH b = CreateSolidBrush(c);
+        RECT tab{ x, y, x + w / 2, y + h / 4 + 1 };
+        RECT body{ x, y + h / 5, x + w, y + h };
+        FillRect(hdc, &tab, b);
+        FillRect(hdc, &body, b);
+        DeleteObject(b);
+    }
+
+    void draw_list_item(const DRAWITEMSTRUCT* dis) {
+        const ui::Palette& p = ui::pal();
+        HDC hdc = dis->hDC;
+        RECT rc = dis->rcItem;
+        const bool sel = (dis->itemState & ODS_SELECTED) != 0;
+        SetDCBrushColor(hdc, sel ? p.select : p.field);
+        FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        if (dis->itemID == static_cast<UINT>(-1) || dis->itemID >= g.shown.size())
+            return;
+        const Item& it = g.items[g.shown[dis->itemID]];
+        const int icon = S(12), cy = (rc.top + rc.bottom) / 2, ix = rc.left + S(6);
+        if (it.folder)
+            draw_folder(hdc, ix, cy - icon / 2, icon, icon - S(1), p.folder);
+        else if (it.favorite)
+            draw_star(hdc, ix + icon / 2, cy, icon / 2 + S(1), p.star);
+        RECT t = rc;
+        t.left = ix + icon + S(6);
+        t.right -= S(4);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, sel ? p.selectText : p.fieldText);
+        HGDIOBJ old = SelectObject(hdc, ui::font(g.dpi, 12, FW_NORMAL));
+        std::wstring name = it.name == L".." ? std::wstring(L"Back") : it.name;
+        DrawTextW(hdc, name.c_str(), -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hdc, old);
+    }
+
+    HWND control(const wchar_t* cls, const wchar_t* text, DWORD style, int id = 0, DWORD ex = 0) {
+        HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, g.wnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g.inst, nullptr);
+        SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(ui::font(g.dpi, 12, FW_NORMAL)), FALSE);
+        return c;
+    }
+
+    HWND button(const wchar_t* text, int id) {
+        return control(L"button", text, BS_OWNERDRAW, id);
+    }
+
+    void apply_fonts() {
+        HFONT f = ui::font(g.dpi, 12, FW_NORMAL);
+        for (HWND c = GetWindow(g.wnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
+            SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(f), FALSE);
+        SendMessageW(g.latency, WM_SETFONT, reinterpret_cast<WPARAM>(ui::font(g.dpi, 11, FW_NORMAL)), FALSE);
+        SendMessageW(g.log, WM_SETFONT, reinterpret_cast<WPARAM>(ui::font(g.dpi, 12, FW_NORMAL, L"Consolas")), FALSE);
+        SendMessageW(g.list, LB_SETITEMHEIGHT, 0, S(20));
+        SendMessageW(g.search, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(4), S(4)));
+        SendMessageW(g.log, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(4), S(4)));
+        for (ui::Slider* s : { &g.seek, &g.cutoff, &g.opacity })
+            s->set_dpi(g.dpi);
+        g.piano.set_dpi(g.dpi);
+        g.visual.set_dpi(g.dpi);
+        g.lcd.set_dpi(g.dpi);
+        g.status.set_dpi(g.dpi);
+        g.tracks.SetDpi(g.dpi);
+    }
+
+    void apply_theme() {
+        int mode = cfg().ui.darkMode;
+        ui::set_dark(mode < 0 ? system_dark() : mode == 1);
+        const ui::Palette& p = ui::pal();
+        for (HBRUSH* b : { &g.brBg, &g.brPanel, &g.brField, &g.brLog })
+            if (*b)
+                DeleteObject(*b);
+        g.brBg = CreateSolidBrush(p.bg);
+        g.brPanel = CreateSolidBrush(p.panel);
+        g.brField = CreateSolidBrush(p.field);
+        g.brLog = CreateSolidBrush(p.logBg);
+        ui::theme_window(g.wnd);
+        ui::theme_control(g.list, L"DarkMode_Explorer");
+        ui::theme_control(g.log, L"DarkMode_Explorer");
+        ui::theme_control(g.tracks.GetWindowHandle(), L"DarkMode_Explorer");
+        ui::theme_control(g.search, L"DarkMode_CFD");
+        for (HWND c : { g.sortCombo, g.curveCombo, g.batchCombo, g.devCombo, g.chanCombo })
+            ui::theme_control(c, L"DarkMode_CFD");
+        g.tracks.Restyle();
+        RedrawWindow(g.wnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND w, LPARAM owner) -> BOOL {
+            if (GetWindow(w, GW_OWNER) == reinterpret_cast<HWND>(owner))
+                SendMessageW(w, WM_THEMECHANGED, 0, 0);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(g.wnd));
+    }
+
+    void layout() {
+        RECT rc;
+        GetClientRect(g.wnd, &rc);
+        const int W = rc.right, H = rc.bottom;
+        if (W <= 0 || H <= 0)
+            return;
+        HDWP dw = BeginDeferWindowPos(64);
+        auto put = [&](HWND h, int x, int y, int w, int hh) {
+            if (h && dw)
+                dw = DeferWindowPos(dw, h, nullptr, x, y, std::max(0, w), std::max(0, hh), SWP_NOZORDER | SWP_NOACTIVATE);
+        };
+        auto at = [&](int id, int x, int y, int w, int hh) { put(GetDlgItem(g.wnd, id), x, y, w, hh); };
+        g.panels.clear();
+        g.frames.clear();
+        auto panel = [&](const wchar_t* title, int x, int y, int w, int hh) { g.panels.push_back({ { x, y, x + w, y + hh }, title }); };
+        auto frame = [&](HWND h, int x, int y, int w, int hh) {
+            put(h, x, y, w, hh);
+            g.frames.push_back({ x - 1, y - 1, x + w + 1, y + hh + 1 });
+        };
+
+        const int m = S(8), gap = S(4), bh = S(24);
+        const int top = S(334);
+        const int lw = S(232);
+        panel(L"Library", m, S(6), lw, top - S(6));
+        const int lx = m + S(8), liw = lw - S(16);
+        frame(g.search, lx, S(28), liw, S(22));
+        put(g.sortCombo, lx, S(56), S(136), S(300));
+        at(ID_BTN_REFRESH, lx + S(140), S(55), liw - S(140), bh);
+        frame(g.list, lx, S(85), liw, S(207));
+        at(ID_BTN_PREV, lx, S(300), S(50), bh);
+        at(ID_BTN_NEXT, lx + S(54), S(300), S(50), bh);
+        at(ID_CHK_SHUFFLE, lx + S(108), S(300), liw - S(108), bh);
+
+        const int x0 = m + lw + S(8), rw = W - x0 - m;
+        panel(L"Now Playing", x0, S(6), rw, S(158));
+        const int nx = x0 + S(10), nw = rw - S(20);
+        const int vw = S(196);
+        g.screens.clear();
+        g.screens.push_back({ nx, S(26), nx + nw, S(98) });
+        put(g.lcd.hwnd(), nx + S(1), S(27), nw - vw - S(9), S(70));
+        put(g.visual.hwnd(), nx + nw - vw - S(8), S(33), vw, S(58));
+        const struct { int id; HWND h; int w; int after; } transport[] = {
+            { ID_BTN_LOAD, nullptr, 46, 0 }, { ID_BTN_PLAY, nullptr, 54, 0 }, { ID_BTN_RESTART, nullptr, 54, 0 },
+            { ID_BTN_REW, nullptr, 40, 0 }, { ID_BTN_SKIP, nullptr, 40, 10 },
+            { 0, g.tempoLabel, 44, 0 }, { ID_BTN_SPEEDDN, nullptr, 24, 0 }, { 0, g.speed, 42, 0 }, { ID_BTN_SPEEDUP, nullptr, 24, 10 },
+            { 0, g.keyLabel, 28, 0 }, { ID_BTN_KEYDN, nullptr, 24, 0 }, { 0, g.keyValue, 34, 0 }, { ID_BTN_KEYUP, nullptr, 24, 0 },
+        };
+        int bx = nx;
+        for (const auto& t : transport) {
+            if (t.id)
+                at(t.id, bx, S(104), S(t.w), S(26));
             else
-                currentSeconds = std::chrono::duration<double>(g_player->total_adjusted_time).count(); // Use last stored time when paused
-            currentSeconds = std::min(currentSeconds, g_totalSongSeconds);
-            int currentMins = static_cast<int>(currentSeconds) / 60;
-            int currentSecs = static_cast<int>(currentSeconds) % 60;
-            int totalMins = static_cast<int>(g_totalSongSeconds) / 60;
-            int totalSecs = static_cast<int>(g_totalSongSeconds) % 60;
-            static int lastCurrentMins = -1, lastCurrentSecs = -1;
-            static int lastTotalMins = -1, lastTotalSecs = -1;
-            if (currentMins != lastCurrentMins || currentSecs != lastCurrentSecs ||
-                totalMins != lastTotalMins || totalSecs != lastTotalSecs) {
-                swprintf_s(timeStr, L"%d:%02d / %d:%02d",
-                    std::min(currentMins, 999), currentSecs,
-                    std::min(totalMins, 999), totalSecs);
-                SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_TIME), timeStr);
-                lastCurrentMins = currentMins;
-                lastCurrentSecs = currentSecs;
-                lastTotalMins = totalMins;
-                lastTotalSecs = totalSecs;
+                put(t.h, bx, S(104), S(t.w), S(26));
+            bx += S(t.w) + gap + S(t.after);
+        }
+        put(g.seek.hwnd(), nx - S(6), S(136), nw + S(12), S(24));
+
+        const int gy = S(170), gh = top - gy;
+        const int wOut = S(228), wLive = (rw - wOut - 2 * S(6)) / 2, wWin = rw - wOut - wLive - 2 * S(6);
+        const int ox = x0, lvx = ox + wOut + S(6), wx = lvx + wLive + S(6);
+        panel(L"Output", ox, gy, wOut, gh);
+        panel(L"Live MIDI", lvx, gy, wLive, gh);
+        panel(L"Window", wx, gy, wWin, gh);
+        const int r1 = gy + S(21), r2 = gy + S(49), r3 = gy + S(77), r4 = gy + S(105), r5 = gy + S(133);
+        {
+            const int x = ox + S(8), w = wOut - S(16);
+            const int a = S(90), b = (w - a - 2 * gap) / 2;
+            at(ID_BTN_OUTPUT, x, r1, a, bh);
+            at(ID_BTN_88KEY, x + a + gap, r1, b, bh);
+            at(ID_BTN_TRANSPOSEOUT, x + a + b + 2 * gap, r1, w - a - b - 2 * gap, bh);
+            at(ID_BTN_VELOCITY, x, r2, S(64), bh);
+            put(g.curveCombo, x + S(64) + gap, r2, w - S(64) - S(40) - 2 * gap, S(300));
+            at(ID_BTN_VLCURVE, x + w - S(40), r2, S(40), bh);
+            at(ID_BTN_SUSTAIN, x, r3, S(84), bh);
+            put(g.cutoff.hwnd(), x + S(84) + gap, r3, w - S(84) - S(28) - 2 * gap, bh);
+            put(g.cutoffValue, x + w - S(28), r3, S(28), bh);
+            at(ID_BTN_VOLADJ, x, r4, S(64), bh);
+            put(g.batchCombo, x + S(64) + gap, r4, w - S(64) - gap, S(300));
+            at(ID_BTN_LEGIT, x, r5, (w - gap) / 2, bh);
+            at(ID_BTN_TRANSPOSE, x + (w - gap) / 2 + gap, r5, w - (w - gap) / 2 - gap, bh);
+        }
+        {
+            const int x = lvx + S(8), w = wLive - S(16), half = (w - gap) / 2;
+            put(g.devCombo, x, r1, w, S(300));
+            put(g.chanCombo, x, r2, w, S(300));
+            at(ID_BTN_MIDI2QWERTY, x, r3, half, bh);
+            at(ID_BTN_MIDICONNECT, x + half + gap, r3, w - half - gap, bh);
+            at(ID_BTN_REFRESH_MIDI, x, r4, w, bh);
+            put(g.latency, x, r5, w, bh);
+        }
+        {
+            const int x = wx + S(8), w = wWin - S(16), half = (w - gap) / 2;
+            at(ID_CHK_GAME, x, r1, w, bh);
+            at(ID_CHK_TOP, x, r2, half, bh);
+            at(ID_CHK_DARK, x + half + gap, r2, w - half - gap, bh);
+            put(g.opacityLabel, x, r3, S(48), bh);
+            put(g.opacity.hwnd(), x + S(48), r3, w - S(48), bh);
+            at(ID_BTN_FOLDER, x, r4, w, bh);
+            at(ID_BTN_STOP, x, r5, w, bh);
+        }
+
+        const int statusH = S(22);
+        const int logY = S(532);
+        const int logH = H - statusH - S(6) - logY;
+        frame(g.tracks.GetWindowHandle(), m + 1, top + S(7), W - 2 * m - 2, S(122));
+        frame(g.piano.hwnd(), m + 1, top + S(136), W - 2 * m - 2, S(54));
+        panel(L"Log", m, logY, W - 2 * m, logH);
+        frame(g.log, m + S(8), logY + S(22), W - 2 * m - S(16) - S(78), logH - S(30));
+        at(ID_BTN_CLEARLOG, W - m - S(8) - S(72), logY + S(22), S(72), bh);
+        put(g.status.hwnd(), 0, H - statusH, W, statusH);
+        if (dw)
+            EndDeferWindowPos(dw);
+        InvalidateRect(g.wnd, nullptr, TRUE);
+    }
+
+    void paint(HWND wnd) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(wnd, &ps);
+        RECT rc;
+        GetClientRect(wnd, &rc);
+        HDC mem = CreateCompatibleDC(hdc);
+        HBITMAP bmp = CreateCompatibleBitmap(hdc, std::max<LONG>(1, rc.right), std::max<LONG>(1, rc.bottom));
+        HGDIOBJ oldBmp = SelectObject(mem, bmp);
+        const ui::Palette& p = ui::pal();
+        FillRect(mem, &rc, g.brBg);
+        SetBkMode(mem, TRANSPARENT);
+        HGDIOBJ oldFont = SelectObject(mem, ui::font(g.dpi, 11, FW_SEMIBOLD));
+        for (const Panel& pn : g.panels) {
+            FillRect(mem, &pn.r, g.brPanel);
+            SetDCBrushColor(mem, p.border);
+            FrameRect(mem, &pn.r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            RECT t{ pn.r.left + S(8), pn.r.top + S(3), pn.r.right - S(8), pn.r.top + S(20) };
+            SetTextColor(mem, p.subtext);
+            DrawTextW(mem, pn.title, -1, &t, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        for (const RECT& f : g.frames) {
+            SetDCBrushColor(mem, p.border);
+            FrameRect(mem, &f, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        }
+        for (const RECT& s : g.screens) {
+            HGDIOBJ oldBrush = SelectObject(mem, GetStockObject(DC_BRUSH));
+            HGDIOBJ oldPen = SelectObject(mem, GetStockObject(DC_PEN));
+            SetDCBrushColor(mem, ui::lcd().bg);
+            SetDCPenColor(mem, ui::lcd().bezel);
+            RoundRect(mem, s.left, s.top, s.right, s.bottom, S(8), S(8));
+            SelectObject(mem, oldPen);
+            SelectObject(mem, oldBrush);
+        }
+        SelectObject(mem, oldFont);
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, oldBmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(wnd, &ps);
+    }
+
+    bool favorite(const Item& item) {
+        if (item.folder)
+            return false;
+        if (item.path.parent_path().filename() == L"favorite")
+            return true;
+        std::error_code ec;
+        return fs::exists(fs::path(L"midi") / L"favorite" / item.path.filename(), ec);
+    }
+
+    void scan_folder() {
+        g.items.clear();
+        std::error_code ec;
+        if (!fs::is_directory(g.dir, ec)) {
+            say("[Scan] '%s' not found.", narrow(g.dir.wstring()).c_str());
+            return;
+        }
+        if (!fs::equivalent(g.dir, L"midi", ec))
+            g.items.push_back({ L"..", g.dir.parent_path(), true, false, 0 });
+        for (const auto& entry : fs::directory_iterator(g.dir, ec)) {
+            Item item;
+            item.name = entry.path().filename().wstring();
+            item.path = entry.path();
+            item.folder = entry.is_directory(ec);
+            if (!item.folder) {
+                std::wstring ext = entry.path().extension().wstring();
+                for (wchar_t& c : ext)
+                    c = static_cast<wchar_t>(towlower(c));
+                if (ext != L".mid" && ext != L".midi" && ext != L".rmi" && ext != L".kar")
+                    continue;
+                auto ft = fs::last_write_time(entry.path(), ec);
+                auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                    ft - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                item.written = std::chrono::system_clock::to_time_t(sys);
+                item.favorite = favorite(item);
             }
-            static bool randomTriggered = false;
-            if (g_randomSongEnabled && currentSeconds >= g_totalSongSeconds && !randomTriggered) {
-                randomTriggered = true;
-                std::vector<int> fileIndices;
-                for (int i = 0; i < static_cast<int>(g_midiItems.size()); ++i) {
-                    if (!g_midiItems[i].isFolder)
-                        fileIndices.push_back(i);
-                }
-                if (!fileIndices.empty()) {
-                    int currentSelection = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
-                    bool currentInFiles = (std::find(fileIndices.begin(), fileIndices.end(), currentSelection) != fileIndices.end());
-                    int randomIndex = currentSelection;
-                    if (fileIndices.size() == 1) {
-                        randomIndex = fileIndices[0];
-                    }
-                    else {
-                        do {
-                            randomIndex = fileIndices[rand() % fileIndices.size()];
-                        } while (currentInFiles && randomIndex == currentSelection);
-                    }
-                    SendMessage(g_lbMidi, LB_SETCURSEL, randomIndex, 0);
-                    PostMessage(hWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_LOAD, BN_CLICKED),
-                        reinterpret_cast<LPARAM>(GetDlgItem(hWnd, ID_BTN_LOAD)));
-                    PostMessage(hWnd, WM_COMMAND, MAKEWPARAM(ID_BTN_PLAY, BN_CLICKED),
-                        reinterpret_cast<LPARAM>(GetDlgItem(hWnd, ID_BTN_PLAY)));
-                }
+            g.items.push_back(std::move(item));
+        }
+        const int mode = cfg().ui.sortMode;
+        auto byName = [&](const Item& a, const Item& b) {
+            int c = _wcsicmp(a.name.c_str(), b.name.c_str());
+            return mode == 1 ? c > 0 : c < 0;
+        };
+        std::stable_sort(g.items.begin(), g.items.end(), [&](const Item& a, const Item& b) {
+            int ra = a.name == L".." ? 0 : a.folder ? 1 : 2, rb = b.name == L".." ? 0 : b.folder ? 1 : 2;
+            if (ra != rb)
+                return ra < rb;
+            if (ra == 1)
+                return byName(a, b);
+            if (a.favorite != b.favorite)
+                return a.favorite;
+            if (mode == 2)
+                return a.written < b.written;
+            if (mode == 3)
+                return a.written > b.written;
+            return byName(a, b);
+        });
+    }
+
+    void fill_list() {
+        wchar_t query[256] = {};
+        GetWindowTextW(g.search, query, 256);
+        std::wstring q = query;
+        for (wchar_t& c : q)
+            c = static_cast<wchar_t>(towlower(c));
+        g.shown.clear();
+        g.songNo = g.songTotal = 0;
+        SendMessageW(g.list, WM_SETREDRAW, FALSE, 0);
+        SendMessageW(g.list, LB_RESETCONTENT, 0, 0);
+        for (int i = 0; i < static_cast<int>(g.items.size()); ++i) {
+            const Item& item = g.items[i];
+            if (!q.empty() && !item.folder) {
+                std::wstring n = item.name;
+                for (wchar_t& c : n)
+                    c = static_cast<wchar_t>(towlower(c));
+                if (n.find(q) == std::wstring::npos)
+                    continue;
             }
-            if (currentSeconds < g_totalSongSeconds)
-                randomTriggered = false;
-            UpdateWindowFocusability();
+            SendMessageW(g.list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.name.c_str()));
+            g.shown.push_back(i);
+            if (!item.folder)
+                ++g.songTotal;
+            if (!item.folder && g.song && item.path == g.song->path)
+                g.songNo = g.songTotal;
+        }
+        if (!g.shown.empty())
+            SendMessageW(g.list, LB_SETCURSEL, 0, 0);
+        SendMessageW(g.list, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(g.list, nullptr, TRUE);
+    }
+
+    void refresh_list() {
+        scan_folder();
+        fill_list();
+    }
+
+    int selected() {
+        int sel = static_cast<int>(SendMessageW(g.list, LB_GETCURSEL, 0, 0));
+        return sel >= 0 && sel < static_cast<int>(g.shown.size()) ? g.shown[sel] : -1;
+    }
+
+    void select_item(int item) {
+        auto it = std::find(g.shown.begin(), g.shown.end(), item);
+        if (it != g.shown.end())
+            SendMessageW(g.list, LB_SETCURSEL, it - g.shown.begin(), 0);
+    }
+
+    void toggle_favorite(int row) {
+        if (row < 0 || row >= static_cast<int>(g.shown.size()))
+            return;
+        Item& item = g.items[g.shown[row]];
+        if (item.folder)
+            return;
+        std::error_code ec;
+        fs::path favDir = fs::path(L"midi") / L"favorite";
+        if (item.path.parent_path().filename() == L"favorite") {
+            fs::remove(item.path, ec);
+            if (!ec)
+                item.path = fs::path(L"midi") / item.path.filename();
+        }
+        else {
+            fs::path dest = favDir / item.path.filename();
+            if (fs::exists(dest, ec)) {
+                fs::remove(dest, ec);
+            }
+            else {
+                fs::create_directories(favDir, ec);
+                fs::copy_file(item.path, dest, fs::copy_options::overwrite_existing, ec);
+            }
+        }
+        item.favorite = favorite(item);
+        RECT r{};
+        SendMessageW(g.list, LB_GETITEMRECT, row, reinterpret_cast<LPARAM>(&r));
+        InvalidateRect(g.list, &r, TRUE);
+        SendMessageW(g.list, LB_SETCURSEL, row, 0);
+    }
+
+    LRESULT CALLBACK list_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+        if (msg == WM_RBUTTONDOWN) {
+            LRESULT r = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, lp);
+            if (!HIWORD(r))
+                toggle_favorite(LOWORD(r));
             return 0;
         }
-        break;
+        return DefSubclassProc(hwnd, msg, wp, lp);
     }
-    case WM_DESTROY:
-        if (g_player) {
-            g_player->should_stop.store(true, std::memory_order_release);
-            SetEvent(g_player->command_event);
-            if (g_player->playback_thread && g_player->playback_thread->joinable()) {
-                try {
-                    g_player->playback_thread->join();
-                    g_player->playback_thread.reset();
-                    std::cout << "[GRACEFUL EXIT] Playback thread joined successfully.\n";
+
+    void fill_devices() {
+        g.devices = live::devices();
+        SendMessageW(g.devCombo, CB_RESETCONTENT, 0, 0);
+        int sel = 0;
+        for (size_t i = 0; i < g.devices.size(); ++i) {
+            SendMessageW(g.devCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(g.devices[i].name.c_str()));
+            if (narrow(g.devices[i].name) == cfg().ui.midiDevice)
+                sel = static_cast<int>(i);
+        }
+        if (g.devices.empty())
+            SendMessageW(g.devCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"No MIDI input devices"));
+        SendMessageW(g.devCombo, CB_SETCURSEL, sel, 0);
+    }
+
+    const live::Device* chosen_device() {
+        int sel = static_cast<int>(SendMessageW(g.devCombo, CB_GETCURSEL, 0, 0));
+        return sel >= 0 && sel < static_cast<int>(g.devices.size()) ? &g.devices[sel] : nullptr;
+    }
+
+    void fill_curves() {
+        SendMessageW(g.curveCombo, CB_RESETCONTENT, 0, 0);
+        for (const wchar_t* n : { L"Linear Coarse", L"Linear Fine", L"Improved Low Volume", L"Logarithmic", L"Exponential" })
+            SendMessageW(g.curveCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+        for (const auto& c : cfg().playback.customVelocityCurves)
+            SendMessageW(g.curveCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(widen(c.name).c_str()));
+        int count = static_cast<int>(SendMessageW(g.curveCombo, CB_GETCOUNT, 0, 0));
+        SendMessageW(g.curveCombo, CB_SETCURSEL, std::clamp(cfg().playback.velocityCurveIndex, 0, count - 1), 0);
+    }
+
+    void refresh_piano_keys() {
+        std::array<std::wstring, 128> labels;
+        bool connect = live::active() ? live::mode() == out::Mode::MidiConnect : cfg().playback.output == midi::OutputMode::MidiConnect;
+        if (connect)
+            labels.fill(L" ");
+        else
+            labels = out::labels();
+        g.piano.set_keys(labels);
+    }
+
+    void show_live_rows(bool on);
+
+    void stop_live(bool quiet = false) {
+        if (!live::active())
+            return;
+        out::Mode m = live::mode();
+        live::close();
+        show_live_rows(false);
+        if (m == out::Mode::MidiConnect)
+            out::sink(m).end();
+        if (!quiet)
+            say(m == out::Mode::MidiConnect ? "[MidiConnect] DISABLED" : "[MIDI->QWERTY] DISABLED");
+        redraw(ID_BTN_MIDI2QWERTY);
+        redraw(ID_BTN_MIDICONNECT);
+        refresh_piano_keys();
+        update_focusability();
+    }
+
+    void start_live(out::Mode m) {
+        const live::Device* dev = chosen_device();
+        if (!dev) {
+            MessageBoxW(g.wnd, L"No MIDI input device found.\nPlug in your keyboard or start loopMIDI / LoopBe, then press Refresh MIDI.",
+                L"MIDI++", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        g.player.pause();
+        aim("Live MIDI");
+        if (m == out::Mode::MidiConnect)
+            out::sink(m).begin();
+        std::wstring err;
+        if (!live::open(*dev, m, err)) {
+            if (m == out::Mode::MidiConnect)
+                out::sink(m).end();
+            say("[MIDI] Could not open %s: %s", narrow(dev->name).c_str(), narrow(err).c_str());
+            std::wstring text = L"Could not open " + dev->name + L":\n" + err;
+            MessageBoxW(g.wnd, text.c_str(), L"MIDI++", MB_OK | MB_ICONERROR);
+            return;
+        }
+        live::set_channel(cfg().ui.midiChannel);
+        live::set_key(g.key);
+        if (m == out::Mode::Keys && cfg().playback.autoVolume)
+            out::calibrate_volume();
+        show_live_rows(true);
+        if (m == out::Mode::MidiConnect)
+            say("[MidiConnect] ENABLED on %s through %s (NumLock is kept on while it runs)", narrow(dev->name).c_str(), narrow(live::path()).c_str());
+        else
+            say("[MIDI->QWERTY] ENABLED on %s through %s", narrow(dev->name).c_str(), narrow(live::path()).c_str());
+        redraw(ID_BTN_MIDI2QWERTY);
+        redraw(ID_BTN_MIDICONNECT);
+        refresh_piano_keys();
+        update_focusability();
+    }
+
+    void toggle_live(out::Mode m) {
+        bool was = live::active() && live::mode() == m;
+        stop_live();
+        if (!was)
+            start_live(m);
+    }
+
+    void apply_rows(const std::vector<TrackControl::TrackInfo>& t, bool channels) {
+        bool solo = std::any_of(t.begin(), t.end(), [](const TrackControl::TrackInfo& i) { return i.isSoloed; });
+        for (size_t i = 0; i < t.size(); ++i) {
+            const bool on = solo ? t[i].isSoloed : !t[i].isMuted;
+            if (channels)
+                live::set_channel_enabled(static_cast<int>(i), on);
+            else
+                g.player.set_track_enabled(i, on);
+        }
+    }
+
+    void apply_tracks() {
+        apply_rows(g.tracks.Tracks(), g.liveRows);
+    }
+
+    void show_live_rows(bool on) {
+        if (on == g.liveRows)
+            return;
+        if (on) {
+            g.songRows = g.tracks.Tracks();
+            std::vector<TrackControl::TrackInfo> rows;
+            for (int ch = 0; ch < 16; ++ch) {
+                TrackControl::TrackInfo info;
+                info.trackName = "Channel " + std::to_string(ch + 1);
+                info.instrumentName = ch == 9 ? "Live input, drum channel" : "Live input";
+                info.noteCount = -1;
+                info.channel = ch;
+                rows.push_back(std::move(info));
+            }
+            g.liveRows = true;
+            g.tracks.SetTracks(rows);
+            apply_tracks();
+            return;
+        }
+        g.liveRows = false;
+        g.tracks.SetTracks(g.songRows);
+        for (int ch = 0; ch < 16; ++ch)
+            live::set_channel_enabled(ch, true);
+        apply_tracks();
+    }
+
+    void show_tracks(bool keepStates) {
+        std::vector<TrackControl::TrackInfo> old = keepStates ? (g.liveRows ? g.songRows : g.tracks.Tracks()) : std::vector<TrackControl::TrackInfo>{};
+        std::vector<TrackControl::TrackInfo> list;
+        if (g.song) {
+            list.reserve(g.song->tracks.size());
+            for (size_t i = 0; i < g.song->tracks.size(); ++i) {
+                const SongTrack& s = g.song->tracks[i];
+                TrackControl::TrackInfo info;
+                info.trackName = s.name;
+                info.instrumentName = s.instrument;
+                info.noteCount = static_cast<int>(std::min<uint64_t>(s.notes, INT_MAX));
+                info.channel = s.channel;
+                info.programNumber = s.program;
+                info.isDrums = s.drums;
+                info.isMuted = s.drums;
+                if (i < old.size()) {
+                    info.isMuted = old[i].isMuted;
+                    info.isSoloed = old[i].isSoloed;
                 }
-                catch (const std::exception& e) {
-                    std::cerr << "[GRACEFUL EXIT] Exception while joining playback thread: " << e.what() << "\n";
+                list.push_back(std::move(info));
+            }
+        }
+        if (g.liveRows) {
+            g.songRows = list;
+            apply_rows(list, false);
+            return;
+        }
+        g.tracks.SetTracks(list);
+        apply_tracks();
+    }
+
+    void show_song() {
+        if (!g.song) {
+            g.lcd.set_text(g.loading ? L"Loading " + g.loadingPath.filename().wstring() + L"..." : std::wstring(L"No song loaded"),
+                L"Pick a MIDI file on the left and press Load, or double click it.");
+            return;
+        }
+        const Song& s = *g.song;
+        g.songNo = 0;
+        for (int i = 0, n = 0; i < static_cast<int>(g.shown.size()); ++i) {
+            const Item& item = g.items[g.shown[i]];
+            if (item.folder)
+                continue;
+            ++n;
+            if (item.path == s.path)
+                g.songNo = n;
+        }
+        int active = 0;
+        for (const auto& t : s.tracks)
+            active += t.notes > 0;
+        std::wstring info = thousands(s.notes) + L" notes, " + std::to_wstring(active) + (active == 1 ? L" track, " : L" tracks, ");
+        wchar_t bpm[32];
+        swprintf_s(bpm, L"%.0f BPM", s.bpm);
+        info += bpm;
+        info += L", " + std::to_wstring(s.tsNum) + L"/" + std::to_wstring(s.tsDen) + L", " + fmt_time(s.length);
+        if (s.peakNotesPerSec >= 2000)
+            info += L", black MIDI";
+        if (cfg().legit.ENABLED)
+            info += L", legit";
+        std::wstring title;
+        for (wchar_t ch : s.path.stem().wstring()) {
+            if (ch == L'_')
+                ch = L' ';
+            if (ch != L' ' || (!title.empty() && title.back() != L' '))
+                title += ch;
+        }
+        g.lcd.set_text(title, info);
+    }
+
+    void show_time(bool force = false) {
+        if (!g.song) {
+            if (force || g.shownSecond != -2) {
+                g.seek.set(0);
+                g.shownSecond = -2;
+            }
+            g.lcd.set_counters(g.songNo, g.songTotal, 0, 0, 0, false);
+            return;
+        }
+        const int64_t len = std::max<int64_t>(1, g.song->length);
+        int64_t pos = g.seek.dragging() ? static_cast<int64_t>(g.seek.value() / 10000.0 * len)
+            : std::clamp<int64_t>(g.player.position(), 0, len);
+        if (!g.seek.dragging())
+            g.seek.set(static_cast<int>(static_cast<double>(pos) / len * 10000.0));
+        g.shownSecond = static_cast<int>(pos / 1'000'000'000);
+        g.lcd.set_counters(g.songNo, g.songTotal, pos, g.song->length,
+            static_cast<int>(std::lround(g.song->bpm_at(pos) * g.player.speed())), playing());
+    }
+
+    void show_key() {
+        std::wstring k = g.key > 0 ? L"+" + std::to_wstring(g.key) : std::to_wstring(g.key);
+        SetWindowTextW(g.keyValue, k.c_str());
+    }
+
+    void show_speed() {
+        wchar_t buf[32];
+        swprintf_s(buf, L"%.2fx", g.player.speed());
+        SetWindowTextW(g.speed, buf);
+    }
+
+    void show_status() {
+        auto now = std::chrono::steady_clock::now();
+        double secs = std::chrono::duration<double>(now - g.lastStats).count();
+        if (secs >= 0.25) {
+            uint64_t sent = input::sent_events(), notes = g.player.notes_played();
+            g.keysPerSec = static_cast<double>(sent - g.lastSent) / secs;
+            g.notesPerSec = static_cast<double>(notes - g.lastNotes) / secs;
+            g.lastSent = sent;
+            g.lastNotes = notes;
+            g.lastStats = now;
+            Player::Stats st = g.player.stats();
+            if (st.batches)
+                g.timing = st;
+            live::Latency l = live::latency();
+            if (l.messages)
+                g.live = l;
+        }
+        HWND t = input::target();
+        std::wstring left = L"Target: " + (t && IsWindow(t) ? widen(window_title(t)) : std::wstring(L"none"));
+        const auto& p = cfg().playback;
+        left += p.output == midi::OutputMode::MidiConnect ? L"  |  MidiConnect" : (p.keys88 ? L"  |  88 keys" : L"  |  61 keys");
+        if (p.output != midi::OutputMode::MidiConnect && p.typedKeys)
+            left += L", typed";
+        int batch = g.player.batching();
+        left += L"  |  batching " + (batch ? std::to_wstring(batch) + L" ms" : std::wstring(L"off"));
+        if (p.batchMs < 0)
+            left += L" (auto)";
+        wchar_t right[256];
+        swprintf_s(right, L"%s notes/s  |  %s keys/s  |  timing %.1f us avg, %.0f us worst",
+            thousands(static_cast<uint64_t>(g.notesPerSec)).c_str(), thousands(static_cast<uint64_t>(g.keysPerSec)).c_str(),
+            g.timing.avgLateUs, g.timing.maxLateUs);
+        g.status.set(left, right);
+
+        wchar_t lat[96];
+        if (live::active() && g.live.messages)
+            swprintf_s(lat, L"%.1f us avg, %.0f us worst", g.live.avgUs, g.live.maxUs);
+        else
+            swprintf_s(lat, live::active() ? L"Waiting for notes" : L"Live input off");
+        SetWindowTextW(g.latency, lat);
+    }
+
+    int suggest_transpose() {
+        if (!g.song)
+            return 0;
+        std::vector<int> notes;
+        std::vector<double> durations;
+        g.song->notes_and_durations(notes, durations, 200000);
+        if (notes.empty()) {
+            say("[TRANSPOSE] No notes.");
+            return 0;
+        }
+        TransposeEngine te;
+        std::string key = te.estimateKey(notes, durations);
+        std::string genre = te.detectGenre(notes, durations, g.song->bpm, g.song->tsNum);
+        say("Detected key: %s, genre: %s", key.c_str(), genre.c_str());
+        return te.findBestTranspose(notes, durations, key, genre);
+    }
+
+    LoadOptions options() {
+        LoadOptions o;
+        o.pairing = cfg().playback.noteHandlingMode;
+        o.legit = cfg().legit;
+        o.detectDrums = cfg().midi.DETECT_DRUMS;
+        return o;
+    }
+
+    void open_song(const fs::path& path, bool autoplay, int64_t keep = -1) {
+        g.cancelLoad = true;
+        if (g.loader.joinable())
+            g.loader.join();
+        g.cancelLoad = false;
+        g.loadProgress = 0;
+        g.loading = true;
+        g.loadingPath = path;
+        uint64_t seq = ++g.loadSeq;
+        if (keep < 0)
+            g.player.pause();
+        LoadOptions opt = options();
+        HWND wnd = g.wnd;
+        g.loader = std::thread([path, opt, seq, autoplay, keep, wnd] {
+            auto* r = new Loaded{ seq, path, nullptr, {}, 0.0, autoplay, keep };
+            auto t0 = std::chrono::steady_clock::now();
+            try {
+                r->song = load_song(path, opt, &g.loadProgress, &g.cancelLoad);
+            }
+            catch (const std::exception& e) {
+                r->error = e.what();
+            }
+            r->ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (!PostMessageW(wnd, WM_APP_LOADED, 0, reinterpret_cast<LPARAM>(r)))
+                delete r;
+        });
+        if (keep < 0)
+            show_song();
+    }
+
+    void on_loaded(Loaded* raw) {
+        std::unique_ptr<Loaded> r(raw);
+        if (r->seq != g.loadSeq)
+            return;
+        g.loading = false;
+        if (!r->error.empty() || !r->song) {
+            if (!r->error.empty())
+                say("[Load] Error in %s: %s", narrow(r->path.filename().wstring()).c_str(), r->error.c_str());
+            show_song();
+            return;
+        }
+        const bool keep = r->keep >= 0;
+        const bool was = keep && playing();
+        g.song = r->song;
+        g.player.load(g.song, keep ? static_cast<int64_t>(static_cast<double>(r->keep) / 1e9 * g.song->length) : 0);
+        show_tracks(keep);
+        if (was)
+            g.player.play();
+        g.freshSong = !keep;
+        show_song();
+        show_time(true);
+        if (keep) {
+            say("[LEGIT] Song rebuilt in %.1f ms", r->ms);
+            return;
+        }
+        for (size_t i = 0; i < g.song->tracks.size(); ++i)
+            if (g.song->tracks[i].drums)
+                say("[DRUMS] Track #%zu \"%s\" looks like drums, muted it", i + 1, g.song->tracks[i].name.c_str());
+        say("[Load] Loaded: %s (%s notes, %s) in %.1f ms", narrow(r->path.filename().wstring()).c_str(),
+            narrow(thousands(g.song->notes)).c_str(), narrow(fmt_time(g.song->length)).c_str(), r->ms);
+        if (g.song->peakNotesPerSec >= 2000 && cfg().playback.batchMs < 0)
+            say("[Load] Black MIDI: %s notes/s at its peak, keys go out in %d ms batches so the game keeps up.",
+                narrow(thousands(static_cast<uint64_t>(g.song->peakNotesPerSec))).c_str(), g.player.batching());
+        if (cfg().playback.autoVolume)
+            g.player.recalibrate();
+        if (r->autoplay && !live::active())
+            start_playing(false);
+    }
+
+    void load_selected(bool autoplay = false) {
+        int sel = selected();
+        if (sel < 0 || g.items[sel].folder) {
+            say("[Load] No MIDI file selected.");
+            return;
+        }
+        open_song(g.items[sel].path, autoplay);
+    }
+
+    bool live_blocks() {
+        if (!live::active())
+            return false;
+        MessageBoxW(g.wnd, L"Auto controls are disabled while MIDI input is active.", L"Info", MB_OK | MB_ICONINFORMATION);
+        return true;
+    }
+
+    bool need_song() {
+        if (g.song)
+            return true;
+        MessageBoxW(g.wnd, g.loading ? L"The song is still loading." : L"Please load a MIDI file first.", L"MIDI++", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+
+    void begin_output() {
+        if (cfg().playback.output == out::Mode::MidiConnect && !g.connectBegun) {
+            out::sink(out::Mode::MidiConnect).begin();
+            g.connectBegun = true;
+        }
+        else if (cfg().playback.output != out::Mode::MidiConnect && g.connectBegun) {
+            out::sink(out::Mode::MidiConnect).end();
+            g.connectBegun = false;
+        }
+        g.player.set_output(cfg().playback.output);
+    }
+
+    void start_playing(bool restart) {
+        aim("Playing");
+        begin_output();
+        if ((g.freshSong || restart) && cfg().auto_transpose.ENABLED) {
+            int want = suggest_transpose();
+            int diff = want - g.gameTranspose;
+            if (diff) {
+                say("Suggested Transposition: %d, adjusting by %d steps.", want, diff);
+                g.player.transpose(diff);
+                g.gameTranspose = want;
+            }
+        }
+        g.freshSong = false;
+        if (restart)
+            g.player.restart();
+        else
+            g.player.play();
+        update_focusability();
+    }
+
+    void play_pause() {
+        if (live_blocks() || !need_song())
+            return;
+        if (playing()) {
+            g.player.pause();
+            say("[PLAYBACK] Paused");
+            update_focusability();
+            return;
+        }
+        start_playing(false);
+        say("[PLAYBACK] Playing");
+    }
+
+    void emergency_stop() {
+        g.player.pause();
+        stop_live(true);
+        {
+            input::Batch b(true);
+            out::sink(out::Mode::Keys).reset(b);
+            out::sink(out::Mode::MidiConnect).reset(b);
+        }
+        say("[EMERGENCY] Stopped playback and live input, released every key.");
+        update_focusability();
+    }
+
+    void step_song(int dir, bool random) {
+        std::vector<int> files;
+        for (int i : g.shown)
+            if (!g.items[i].folder)
+                files.push_back(i);
+        if (files.empty())
+            return;
+        int cur = selected();
+        int next = files.front();
+        if (random) {
+            static std::mt19937 rng(std::random_device{}());
+            if (files.size() > 1)
+                do next = files[std::uniform_int_distribution<size_t>(0, files.size() - 1)(rng)]; while (next == cur);
+        }
+        else {
+            auto it = std::find(files.begin(), files.end(), cur);
+            if (it == files.end())
+                next = dir > 0 ? files.front() : files.back();
+            else if (dir > 0)
+                next = (it + 1 == files.end()) ? files.front() : *(it + 1);
+            else
+                next = it == files.begin() ? files.back() : *(it - 1);
+        }
+        select_item(next);
+        open_song(g.items[next].path, true);
+    }
+
+    void set_toggle(int id) {
+        auto& p = cfg().playback;
+        switch (id) {
+        case ID_BTN_88KEY:
+            p.keys88 = !p.keys88;
+            say("[88-KEY MODE] %s", p.keys88 ? "Enabled (notes outside the 61 keys use ctrl+key, only for games that support it)" : "Disabled");
+            break;
+        case ID_BTN_VOLADJ:
+            p.autoVolume = !p.autoVolume;
+            if (p.autoVolume)
+                say("[AUTOVOL] On. Initial=%d%% Step=%d%% Max=%d%%", cfg().volume.INITIAL_VOLUME, cfg().volume.VOLUME_STEP, cfg().volume.MAX_VOLUME);
+            else
+                say("[AUTOVOL] Off.");
+            break;
+        case ID_BTN_VELOCITY:
+            p.velocityKeys = !p.velocityKeys;
+            say("[VELOCITY KEY] %s", p.velocityKeys ? "Enabled (ALT+key combos in use)" : "Disabled");
+            break;
+        case ID_BTN_SUSTAIN:
+            p.sustain = p.sustain == midi::SustainMode::Ignore ? midi::SustainMode::Down
+                : p.sustain == midi::SustainMode::Down ? midi::SustainMode::Up : midi::SustainMode::Ignore;
+            SetDlgItemTextW(g.wnd, ID_BTN_SUSTAIN, p.sustain == midi::SustainMode::Down ? L"Sustain: Down"
+                : p.sustain == midi::SustainMode::Up ? L"Sustain: Up" : L"Sustain: Off");
+            if (p.sustain == midi::SustainMode::Down) say("[SUSTAIN] DOWN cutoff=%d", p.sustainCutoff);
+            else if (p.sustain == midi::SustainMode::Up) say("[SUSTAIN] UP (inverted) cutoff=%d", p.sustainCutoff);
+            else say("[SUSTAIN] IGNORE");
+            break;
+        case ID_BTN_TRANSPOSEOUT:
+            p.outOfRange = !p.outOfRange;
+            say("[TRANSPOSE] Out of range notes %s", p.outOfRange ? "move into range" : "are dropped");
+            break;
+        case ID_BTN_OUTPUT:
+            if (p.output == midi::OutputMode::Keys && !p.typedKeys) {
+                p.typedKeys = true;
+            }
+            else if (p.output == midi::OutputMode::Keys) {
+                p.output = midi::OutputMode::MidiConnect;
+                p.typedKeys = false;
+            }
+            else {
+                p.output = midi::OutputMode::Keys;
+            }
+            SetDlgItemTextW(g.wnd, ID_BTN_OUTPUT, output_label());
+            say("[OUTPUT] %s", p.output == midi::OutputMode::MidiConnect ? "Autoplayer sends MidiConnect numpad codes"
+                : p.typedKeys ? "Keys follow the characters of the game window's keyboard layout (for apps that read text)"
+                : "Keys are sent by position like a US keyboard (Roblox)");
+            if (playing())
+                begin_output();
+            else
+                g.player.set_output(p.output);
+            break;
+        default:
+            return;
+        }
+        out::reload();
+        if (id == ID_BTN_VOLADJ && p.autoVolume) {
+            if (live::active()) {
+                aim("Volume calibration");
+                out::calibrate_volume();
+            }
+            else if (g.song)
+                g.player.recalibrate();
+        }
+        refresh_piano_keys();
+        redraw(id);
+        save_config();
+    }
+
+    void on_legit_apply() {
+        const auto& l = cfg().legit;
+        if (l.ENABLED)
+            say("[LEGIT] On: timing %.0f%%, skip %.0f%%, pauses %.0f%% (%.0f-%.0f ms)", l.TIMING_VARIATION * 100, l.NOTE_SKIP_CHANCE * 100,
+                l.EXTRA_DELAY_CHANCE * 100, l.EXTRA_DELAY_MIN * 1000, l.EXTRA_DELAY_MAX * 1000);
+        else
+            say("[LEGIT] Off");
+        save_config();
+        redraw(ID_BTN_LEGIT);
+        if (g.song) {
+            int64_t pos = std::max<int64_t>(0, g.player.position());
+            double frac = std::clamp(static_cast<double>(pos) / std::max<int64_t>(1, g.song->length), 0.0, 1.0);
+            open_song(g.song->path, false, static_cast<int64_t>(frac * 1e9));
+        }
+    }
+
+    void target_left() {
+        HWND t = input::target();
+        if (!t || !input::guard() || input::target_in_front())
+            return;
+        input::focus_lost();
+        if (!IsWindow(t)) {
+            input::set_target(nullptr);
+            say("[Keys] The game window closed.");
+            if (playing())
+                g.player.pause();
+            update_focusability();
+            return;
+        }
+        if (ours(root(GetForegroundWindow()))) {
+            if (!g.awayNoted && (playing() || live::active()))
+                say("[Keys] MIDI++ is in front, the song keeps going and keys resume when %s is back in front.", window_title(t).c_str());
+            g.awayNoted = true;
+            return;
+        }
+        if (playing()) {
+            g.player.pause();
+            say("[PLAYBACK] Paused, %s is not in front. Press %s in the game to go on.", window_title(t).c_str(),
+                input::key_label(cfg().hotkeys.PLAY_PAUSE_KEY).c_str());
+            update_focusability();
+        }
+    }
+
+    void CALLBACK on_foreground(HWINEVENTHOOK, DWORD, HWND hwnd, LONG idObject, LONG, DWORD, DWORD) {
+        if (idObject != OBJID_WINDOW || !hwnd)
+            return;
+        HWND r = root(hwnd);
+        if (!ours(r))
+            g.lastExternal = r;
+        target_left();
+    }
+
+    void hotkey_loop() {
+        const auto& h = cfg().hotkeys;
+        const int vks[4] = { input::parse_vk(h.PLAY_PAUSE_KEY), input::parse_vk(h.REWIND_KEY), input::parse_vk(h.SKIP_KEY),
+            input::parse_vk(h.EMERGENCY_EXIT_KEY) };
+        bool was[4] = {};
+        while (!g.quit.load()) {
+            for (int i = 0; i < 4; ++i) {
+                bool down = vks[i] && (GetAsyncKeyState(vks[i]) & 0x8000);
+                if (down && !was[i])
+                    PostMessageW(g.wnd, WM_APP_HOTKEY, i, 0);
+                was[i] = down;
+            }
+            Sleep(10);
+        }
+    }
+
+    void create_controls(HWND wnd) {
+        g.wnd = wnd;
+        INITCOMMONCONTROLSEX icex{ sizeof(icex), ICC_STANDARD_CLASSES };
+        InitCommonControlsEx(&icex);
+        const auto& c = cfg();
+
+        g.search = control(L"edit", L"", ES_AUTOHSCROLL | WS_TABSTOP, ID_SEARCH);
+        SendMessageW(g.search, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Search songs"));
+        g.sortCombo = control(L"combobox", nullptr, CBS_DROPDOWNLIST | WS_VSCROLL, ID_CB_SORT);
+        for (const wchar_t* s : { L"Name (A-Z)", L"Name (Z-A)", L"Date (Old-New)", L"Date (New-Old)" })
+            SendMessageW(g.sortCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
+        SendMessageW(g.sortCombo, CB_SETCURSEL, c.ui.sortMode, 0);
+        button(L"Refresh", ID_BTN_REFRESH);
+        g.list = control(L"listbox", nullptr, LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | WS_VSCROLL | LBS_NOINTEGRALHEIGHT, ID_LB_MIDI);
+        SetWindowSubclass(g.list, list_proc, 0, 0);
+        button(L"Prev", ID_BTN_PREV);
+        button(L"Next", ID_BTN_NEXT);
+        button(L"Shuffle", ID_CHK_SHUFFLE);
+
+        g.lcd.create(wnd);
+        button(L"Load", ID_BTN_LOAD);
+        button(L"Play", ID_BTN_PLAY);
+        button(L"Restart", ID_BTN_RESTART);
+        button(L"-10s", ID_BTN_REW);
+        button(L"+10s", ID_BTN_SKIP);
+        g.tempoLabel = control(L"static", L"Tempo", SS_RIGHT | SS_CENTERIMAGE);
+        button(L"-", ID_BTN_SPEEDDN);
+        g.speed = control(L"static", L"1.00x", SS_CENTER | SS_CENTERIMAGE);
+        button(L"+", ID_BTN_SPEEDUP);
+        g.keyLabel = control(L"static", L"Key", SS_RIGHT | SS_CENTERIMAGE);
+        button(L"-", ID_BTN_KEYDN);
+        g.keyValue = control(L"static", L"0", SS_CENTER | SS_CENTERIMAGE);
+        button(L"+", ID_BTN_KEYUP);
+        g.visual.create(wnd);
+        g.seek.create(wnd, ID_SEEK, 0, 10000, 0);
+
+        button(output_label(), ID_BTN_OUTPUT);
+        button(L"88-Key", ID_BTN_88KEY);
+        button(L"OutRange", ID_BTN_TRANSPOSEOUT);
+        button(L"Velocity", ID_BTN_VELOCITY);
+        g.curveCombo = control(L"combobox", nullptr, CBS_DROPDOWNLIST | WS_VSCROLL, ID_CB_VELOCITY_CURVE);
+        button(L"Edit", ID_BTN_VLCURVE);
+        button(c.playback.sustain == midi::SustainMode::Down ? L"Sustain: Down"
+            : c.playback.sustain == midi::SustainMode::Up ? L"Sustain: Up" : L"Sustain: Off", ID_BTN_SUSTAIN);
+        g.cutoff.create(wnd, ID_SLIDER_SUSTAIN, 0, 127, c.playback.sustainCutoff);
+        g.cutoffValue = control(L"static", std::to_wstring(c.playback.sustainCutoff).c_str(), SS_CENTER | SS_CENTERIMAGE);
+        button(L"AutoVol", ID_BTN_VOLADJ);
+        g.batchCombo = control(L"combobox", nullptr, CBS_DROPDOWNLIST | WS_VSCROLL, ID_CB_BATCH);
+        for (const wchar_t* s : { L"Key batching: auto", L"Key batching: off", L"Key batching: 1 ms", L"Key batching: 2 ms",
+            L"Key batching: 4 ms", L"Key batching: 8 ms", L"Key batching: 16 ms" })
+            SendMessageW(g.batchCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
+        int batchSel = 0;
+        for (int i = 0; i < 7; ++i)
+            if (kBatchMs[i] == c.playback.batchMs)
+                batchSel = i;
+        SendMessageW(g.batchCombo, CB_SETCURSEL, batchSel, 0);
+        button(L"Legit...", ID_BTN_LEGIT);
+        button(L"Transpose", ID_BTN_TRANSPOSE);
+
+        g.devCombo = control(L"combobox", nullptr, CBS_DROPDOWNLIST | WS_VSCROLL, ID_CB_MIDIDEV);
+        g.chanCombo = control(L"combobox", nullptr, CBS_DROPDOWNLIST | WS_VSCROLL, ID_CB_MIDICH);
+        SendMessageW(g.chanCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Channels"));
+        for (int ch = 1; ch <= 16; ++ch) {
+            std::wstring s = L"Channel " + std::to_wstring(ch);
+            SendMessageW(g.chanCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s.c_str()));
+        }
+        SendMessageW(g.chanCombo, CB_SETCURSEL, c.ui.midiChannel + 1, 0);
+        button(L"Midi2Key", ID_BTN_MIDI2QWERTY);
+        button(L"MidiConnect", ID_BTN_MIDICONNECT);
+        button(L"Refresh MIDI", ID_BTN_REFRESH_MIDI);
+        g.latency = control(L"static", L"Live input off", SS_CENTER | SS_CENTERIMAGE);
+
+        button(L"Game window only", ID_CHK_GAME);
+        button(L"On top", ID_CHK_TOP);
+        button(L"Dark mode", ID_CHK_DARK);
+        g.opacityLabel = control(L"static", L"Opacity", SS_LEFT | SS_CENTERIMAGE);
+        g.opacity.create(wnd, ID_SLIDER_OPACITY, 100, 255, c.ui.opacity);
+        button(L"Open MIDI folder", ID_BTN_FOLDER);
+        button(L"Stop all keys (F4)", ID_BTN_STOP);
+
+        g.tracks.Create(wnd, 0, 0, 100, 100);
+        g.tracks.SetOnChange(apply_tracks);
+        g.piano.create(wnd);
+        g.log = control(L"edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, ID_EDIT_LOG);
+        SendMessageW(g.log, EM_SETLIMITTEXT, 0, 0);
+        button(L"Clear", ID_BTN_CLEARLOG);
+        g.status.create(wnd);
+
+        apply_fonts();
+        apply_theme();
+        fill_curves();
+        fill_devices();
+        refresh_list();
+        refresh_piano_keys();
+        show_song();
+        show_speed();
+        SetWindowPos(wnd, c.ui.alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SetLayeredWindowAttributes(wnd, 0, static_cast<BYTE>(c.ui.opacity), LWA_ALPHA);
+        SetTimer(wnd, IDT_FRAME, 16, nullptr);
+        SetTimer(wnd, IDT_STATS, 500, nullptr);
+    }
+
+    void on_command(HWND wnd, int id, int code) {
+        auto& c = cfg();
+        switch (id) {
+        case ID_SEARCH:
+            if (code == EN_CHANGE)
+                fill_list();
+            break;
+        case ID_CB_SORT:
+            if (code == CBN_SELCHANGE) {
+                c.ui.sortMode = static_cast<int>(SendMessageW(g.sortCombo, CB_GETCURSEL, 0, 0));
+                refresh_list();
+                save_config();
+            }
+            break;
+        case ID_BTN_REFRESH:
+            refresh_list();
+            break;
+        case ID_LB_MIDI:
+            if (code == LBN_DBLCLK) {
+                int sel = selected();
+                if (sel < 0)
+                    break;
+                if (g.items[sel].folder) {
+                    g.dir = g.items[sel].path;
+                    SetWindowTextW(g.search, L"");
+                    refresh_list();
                 }
-                catch (...) {
-                    std::cerr << "[GRACEFUL EXIT] Unknown exception while joining playback thread.\n";
+                else {
+                    open_song(g.items[sel].path, false);
                 }
             }
-            if (g_midi2key) {
-                g_midi2key->SetActive(false);
-                g_midi2key->CloseDevice();
-                g_midi2key.reset();
+            break;
+        case ID_BTN_PREV:
+            step_song(-1, false);
+            break;
+        case ID_BTN_NEXT:
+            step_song(1, false);
+            break;
+        case ID_CHK_SHUFFLE:
+            g.shuffle = !g.shuffle;
+            redraw(id);
+            break;
+        case ID_SEEK:
+            if (code == ui::kSliderCommit && g.song) {
+                g.player.seek(static_cast<int64_t>(g.seek.value() / 10000.0 * g.song->length));
+                show_time(true);
             }
-            if (g_midiConnect) {
-                g_midiConnect->SetActive(false);
-                g_midiConnect->CloseDevice();
-                g_midiConnect.reset();
+            else if (code == ui::kSliderChange) {
+                show_time(true);
             }
+            break;
+        case ID_BTN_LOAD:
+            load_selected();
+            break;
+        case ID_BTN_PLAY:
+            play_pause();
+            break;
+        case ID_BTN_RESTART:
+            if (live_blocks() || !need_song())
+                break;
+            start_playing(true);
+            say("[RESTART] Done.");
+            break;
+        case ID_BTN_SKIP:
+        case ID_BTN_REW:
+            if (live_blocks() || !need_song())
+                break;
+            g.player.skip(id == ID_BTN_SKIP ? 10'000'000'000 : -10'000'000'000);
+            show_time(true);
+            break;
+        case ID_BTN_KEYUP:
+        case ID_BTN_KEYDN: {
+            g.key = std::clamp(g.key + (id == ID_BTN_KEYUP ? 1 : -1), -24, 24);
+            g.player.set_key(g.key);
+            live::set_key(g.key);
+            show_key();
+            say("[KEY] %+d semitones", g.key);
+            break;
+        }
+        case ID_BTN_SPEEDUP:
+        case ID_BTN_SPEEDDN: {
+            if (live_blocks() || !need_song())
+                break;
+            double s = g.player.speed() * (id == ID_BTN_SPEEDUP ? 1.1 : 1.0 / 1.1);
+            s = std::clamp(s, 0.25, 2.0);
+            if (std::fabs(s - 1.0) < 0.05)
+                s = 1.0;
+            g.player.set_speed(s);
+            show_speed();
+            break;
+        }
+        case ID_BTN_OUTPUT:
+        case ID_BTN_88KEY:
+        case ID_BTN_TRANSPOSEOUT:
+        case ID_BTN_VELOCITY:
+        case ID_BTN_SUSTAIN:
+        case ID_BTN_VOLADJ:
+            set_toggle(id);
+            break;
+        case ID_CB_VELOCITY_CURVE:
+            if (code == CBN_DROPDOWN) {
+                fill_curves();
+            }
+            else if (code == CBN_SELCHANGE) {
+                int sel = static_cast<int>(SendMessageW(g.curveCombo, CB_GETCURSEL, 0, 0));
+                c.playback.velocityCurveIndex = std::max(0, sel);
+                c.playback.velocityCurve = sel < 5 ? static_cast<midi::VelocityCurveType>(sel) : midi::VelocityCurveType::Custom;
+                out::reload(false);
+                save_config();
+            }
+            break;
+        case ID_BTN_VLCURVE: {
+            auto* editor = new VelocityCurveEditor();
+            if (!editor->Create(wnd, c.playback.velocityCurveIndex, [](int index) {
+                    auto& p = cfg().playback;
+                    p.velocityCurveIndex = index;
+                    p.velocityCurve = midi::VelocityCurveType::Custom;
+                    fill_curves();
+                    out::reload(false);
+                    save_config();
+                    say("[VELOCITY] Saved curve \"%s\", playing with it now", p.customVelocityCurves[static_cast<size_t>(index - 5)].name.c_str());
+                }))
+                delete editor;
+            break;
+        }
+        case ID_CB_BATCH:
+            if (code == CBN_SELCHANGE) {
+                int sel = std::clamp(static_cast<int>(SendMessageW(g.batchCombo, CB_GETCURSEL, 0, 0)), 0, 6);
+                c.playback.batchMs = kBatchMs[sel];
+                g.player.set_batching(c.playback.batchMs);
+                save_config();
+                show_status();
+            }
+            break;
+        case ID_BTN_LEGIT:
+            ShowLegitWindow(wnd, nullptr, on_legit_apply);
+            break;
+        case ID_BTN_TRANSPOSE:
+            if (!need_song())
+                break;
             {
-                std::lock_guard<std::mutex> lk(g_logMutex);
-                g_logBuffer.clear();
+                int best = suggest_transpose();
+                std::wstring text = L"Suggested transpose: [" + std::to_wstring(best) + L"]";
+                MessageBoxW(wnd, text.c_str(), L"Transpose Suggestion", MB_OK | MB_ICONINFORMATION);
             }
-            g_toggleStates.clear();
-            std::cout << "[GRACEFUL EXIT] Global states cleared.\n";
+            break;
+        case ID_CB_MIDIDEV:
+            if (code == CBN_DROPDOWN) {
+                fill_devices();
+            }
+            else if (code == CBN_SELCHANGE) {
+                if (const live::Device* d = chosen_device()) {
+                    c.ui.midiDevice = narrow(d->name);
+                    save_config();
+                    if (live::active())
+                        start_live(live::mode());
+                }
+            }
+            break;
+        case ID_CB_MIDICH:
+            if (code == CBN_SELCHANGE) {
+                c.ui.midiChannel = static_cast<int>(SendMessageW(g.chanCombo, CB_GETCURSEL, 0, 0)) - 1;
+                live::set_channel(c.ui.midiChannel);
+                save_config();
+            }
+            break;
+        case ID_BTN_MIDI2QWERTY:
+            toggle_live(out::Mode::Keys);
+            break;
+        case ID_BTN_MIDICONNECT:
+            toggle_live(out::Mode::MidiConnect);
+            break;
+        case ID_BTN_REFRESH_MIDI:
+            fill_devices();
+            say("[MIDI Devices] %zu input device%s", g.devices.size(), g.devices.size() == 1 ? "" : "s");
+            break;
+        case ID_CHK_GAME:
+            c.playback.gameWindowOnly = !c.playback.gameWindowOnly;
+            input::set_guard(c.playback.gameWindowOnly);
+            redraw(id);
+            save_config();
+            say("[Keys] %s", c.playback.gameWindowOnly ? "Keys only go to the game window" : "Keys go to whatever window is in front");
+            break;
+        case ID_CHK_TOP:
+            c.ui.alwaysOnTop = !c.ui.alwaysOnTop;
+            SetWindowPos(wnd, c.ui.alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            redraw(id);
+            save_config();
+            break;
+        case ID_CHK_DARK:
+            c.ui.darkMode = ui::dark() ? 0 : 1;
+            apply_theme();
+            save_config();
+            break;
+        case ID_SLIDER_SUSTAIN:
+            c.playback.sustainCutoff = g.cutoff.value();
+            SetWindowTextW(g.cutoffValue, std::to_wstring(c.playback.sustainCutoff).c_str());
+            out::reload(false);
+            if (code == ui::kSliderCommit)
+                save_config();
+            break;
+        case ID_SLIDER_OPACITY:
+            c.ui.opacity = std::clamp(g.opacity.value(), 100, 255);
+            SetLayeredWindowAttributes(wnd, 0, static_cast<BYTE>(c.ui.opacity), LWA_ALPHA);
+            if (code == ui::kSliderCommit)
+                save_config();
+            break;
+        case ID_BTN_FOLDER: {
+            std::error_code ec;
+            fs::path folder = fs::absolute(g.dir, ec);
+            ShellExecuteW(wnd, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            break;
+        }
+        case ID_BTN_STOP:
+            emergency_stop();
+            break;
+        case ID_BTN_CLEARLOG:
+            SetWindowTextW(g.log, L"");
+            break;
+        default:
+            break;
+        }
+    }
+
+    LRESULT CALLBACK wnd_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
+        switch (msg) {
+        case WM_CREATE: {
+            g.wnd = wnd;
+            using DpiFn = UINT(WINAPI*)(HWND);
+            auto dpiFor = reinterpret_cast<DpiFn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+            if (dpiFor) {
+                g.dpi = static_cast<int>(dpiFor(wnd));
+            }
+            else {
+                HDC dc = GetDC(nullptr);
+                g.dpi = GetDeviceCaps(dc, LOGPIXELSX);
+                ReleaseDC(nullptr, dc);
+            }
+            create_controls(wnd);
+            return 0;
+        }
+        case WM_SIZE:
+            layout();
+            return 0;
+        case WM_DPICHANGED: {
+            g.dpi = HIWORD(wp);
+            apply_fonts();
+            const RECT* r = reinterpret_cast<const RECT*>(lp);
+            SetWindowPos(wnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+            layout();
+            return 0;
+        }
+        case WM_SETTINGCHANGE:
+            if (cfg().ui.darkMode < 0 && lp && !lstrcmpW(reinterpret_cast<LPCWSTR>(lp), L"ImmersiveColorSet"))
+                apply_theme();
+            break;
+        case WM_MOUSEACTIVATE:
+            if (GetWindowLongW(wnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(wnd, &pt);
+                if (ChildWindowFromPointEx(wnd, pt, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT) == g.search) {
+                    SetForegroundWindow(wnd);
+                    return MA_ACTIVATE;
+                }
+                return MA_NOACTIVATE;
+            }
+            break;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT:
+            paint(wnd);
+            return 0;
+        case WM_MEASUREITEM: {
+            auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lp);
+            if (mis->CtlType == ODT_LISTBOX) {
+                mis->itemHeight = S(20);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_DRAWITEM: {
+            auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+            if (dis->CtlType == ODT_LISTBOX) {
+                draw_list_item(dis);
+                return TRUE;
+            }
+            if (dis->CtlType == ODT_BUTTON) {
+                const int id = static_cast<int>(dis->CtlID);
+                COLORREF fill = CLR_INVALID;
+                if (id == ID_BTN_STOP)
+                    fill = ui::pal().warn;
+                else if (id == ID_BTN_OUTPUT && cfg().playback.output == midi::OutputMode::MidiConnect)
+                    fill = RGB(255, 190, 90);
+                else if (id == ID_BTN_OUTPUT && cfg().playback.typedKeys)
+                    fill = ui::pal().solo;
+                else if (id == ID_BTN_SUSTAIN && cfg().playback.sustain == midi::SustainMode::Up)
+                    fill = ui::pal().solo;
+                ui::draw_button(dis, is_on(id), g.dpi, fill);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC hdc = reinterpret_cast<HDC>(wp);
+            HWND ctl = reinterpret_cast<HWND>(lp);
+            const ui::Palette& p = ui::pal();
+            if (ctl == g.log) {
+                SetBkColor(hdc, p.logBg);
+                SetTextColor(hdc, p.logText);
+                return reinterpret_cast<LRESULT>(g.brLog);
+            }
+            SetBkColor(hdc, p.panel);
+            SetTextColor(hdc, ctl == g.tempoLabel || ctl == g.keyLabel || ctl == g.latency || ctl == g.opacityLabel ? p.subtext : p.text);
+            return reinterpret_cast<LRESULT>(g.brPanel);
+        }
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX: {
+            HDC hdc = reinterpret_cast<HDC>(wp);
+            SetBkColor(hdc, ui::pal().field);
+            SetTextColor(hdc, ui::pal().fieldText);
+            return reinterpret_cast<LRESULT>(g.brField);
+        }
+        case WM_COMMAND:
+            on_command(wnd, LOWORD(wp), HIWORD(wp));
+            return 0;
+        case WM_TIMER:
+            if (wp == IDT_FRAME) {
+                auto now = std::chrono::steady_clock::now();
+                double dt = std::chrono::duration<double>(now - g.lastFrame).count();
+                g.lastFrame = now;
+                auto a = g.player.held(), b = live::held();
+                std::array<uint64_t, 2> mask{ a[0] | b[0], a[1] | b[1] };
+                g.piano.set_mask(mask);
+                g.visual.step(live::active() ? live::hits() : g.player.hits(), mask, dt);
+                if (g.liveRows) {
+                    g.tracks.Animate(live::channels(), 16, dt);
+                }
+                else {
+                    const Player::Tracks t = g.player.tracks();
+                    g.tracks.Animate(t.live.get(), t.count, dt);
+                }
+                show_time();
+                if (playing() || live::active())
+                    input::refresh();
+                if (playing() && input::target() && input::guard() && !input::target_in_front()) {
+                    if (++g.away > 6)
+                        target_left();
+                }
+                else {
+                    g.away = 0;
+                    if (input::target_in_front())
+                        g.awayNoted = false;
+                }
+                if (g.loading && !g.song) {
+                    static int lastPct = -1;
+                    int pct = g.loadProgress.load();
+                    if (pct != lastPct) {
+                        lastPct = pct;
+                        std::wstring t = L"Loading " + g.loadingPath.filename().wstring() + L"... " + std::to_wstring(pct) + L"%";
+                        g.lcd.set_text(t, L"Reading the file");
+                    }
+                }
+            }
+            else if (wp == IDT_STATS) {
+                show_status();
+                update_focusability();
+            }
+            else if (wp == IDT_DEVICES) {
+                KillTimer(wnd, IDT_DEVICES);
+                size_t before = g.devices.size();
+                fill_devices();
+                if (g.devices.size() != before)
+                    say("[MIDI Devices] %zu input device%s", g.devices.size(), g.devices.size() == 1 ? "" : "s");
+            }
+            return 0;
+        case WM_DEVICECHANGE:
+            if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE)
+                SetTimer(wnd, IDT_DEVICES, 700, nullptr);
+            return TRUE;
+        case WM_APP_LOG:
+            flush_log();
+            return 0;
+        case WM_APP_LOADED:
+            on_loaded(reinterpret_cast<Loaded*>(lp));
+            return 0;
+        case WM_APP_PLAYER:
+            if (wp == Player::Ended) {
+                say("[PLAYBACK] Finished.");
+                show_time(true);
+                update_focusability();
+                if (g.shuffle && !live::active())
+                    step_song(1, true);
+            }
+            return 0;
+        case WM_APP_HOTKEY:
+            switch (wp) {
+            case HK_PLAY: play_pause(); break;
+            case HK_REWIND: if (g.song && !live::active()) g.player.skip(-10'000'000'000); break;
+            case HK_SKIP: if (g.song && !live::active()) g.player.skip(10'000'000'000); break;
+            case HK_STOP: emergency_stop(); break;
+            default: break;
+            }
+            return 0;
+        case WM_CLOSE:
+            DestroyWindow(wnd);
+            return 0;
+        case WM_DESTROY:
+            KillTimer(wnd, IDT_FRAME);
+            KillTimer(wnd, IDT_STATS);
+            g.cancelLoad = true;
+            if (g.loader.joinable())
+                g.loader.join();
+            stop_live(true);
+            g.player.shutdown();
+            if (g.connectBegun)
+                out::sink(out::Mode::MidiConnect).end();
+            save_config();
             PostQuitMessage(0);
             return 0;
+        default:
+            break;
         }
-        break;
+        return DefWindowProcW(wnd, msg, wp, lp);
     }
-    return DefWindowProc(hWnd, msg, wParam, lParam);
+
+    void opt_out_of_throttling() {
+        using Fn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+        HMODULE k = GetModuleHandleW(L"kernel32.dll");
+        auto fn = k ? reinterpret_cast<Fn>(GetProcAddress(k, "SetProcessInformation")) : nullptr;
+        if (!fn)
+            return;
+        PROCESS_POWER_THROTTLING_STATE s{};
+        s.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        s.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+        s.StateMask = 0;
+        if (!fn(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s))) {
+            s.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+            fn(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s));
+        }
+    }
+
+    void dpi_aware() {
+        using Ctx = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto set = reinterpret_cast<Ctx>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
+        if (!set || !set(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+            SetProcessDPIAware();
+    }
+
 }
 
-// -----------------------------------------------------------------------------
-// Main Entry Point
-// -----------------------------------------------------------------------------
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
-    srand(static_cast<unsigned int>(time(NULL)));
-    UniqueHandle singleInstanceMutex(CreateMutexW(nullptr, TRUE, L"Global\\MIDI++_On_Top"));
-    g_hSingleInstanceMutex = singleInstanceMutex;
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+    wchar_t exe[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH))
+        SetCurrentDirectoryW(fs::path(exe).parent_path().c_str());
+
+    HANDLE single = CreateMutexW(nullptr, TRUE, L"Global\\MIDI++_On_Top");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existingWindow = FindWindowW(L"MIDI++", L"MIDI++ v1.0.4.R5");
-        if (existingWindow) {
-            if (IsIconic(existingWindow))
-                ShowWindow(existingWindow, SW_RESTORE);
-            SetForegroundWindow(existingWindow);
+        if (HWND other = FindWindowW(kClass, nullptr)) {
+            if (IsIconic(other))
+                ShowWindow(other, SW_RESTORE);
+            SetForegroundWindow(other);
         }
         return 0;
     }
-    GdiplusTokenWrapper gdiplusToken;
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    if (Gdiplus::GdiplusStartup(&gdiplusToken.token, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
-        MessageBoxA(nullptr, "Failed to initialize GDI+.", "Error", MB_ICONERROR);
-        return -1;
-    }
-    static VirtualPianoPlayer player;
-    g_player = &player;
-    RedirectCout();
-    auto& cfg = midi::Config::getInstance();
-    std::cout << " ===== MIDI++ v1.0.4.R5 | Developed by Zeph, Tested by Gene =====\n";
-    std::cout << "Hotkeys:\n";
-    std::cout << "  Play/Pause:     " << getReadableKey(cfg.hotkeys.PLAY_PAUSE_KEY) << "\n";
-    std::cout << "  Rewind:         " << getReadableKey(cfg.hotkeys.REWIND_KEY) << "\n";
-    std::cout << "  Skip:           " << getReadableKey(cfg.hotkeys.SKIP_KEY) << "\n";
-    std::cout << "  Play Stop:      " << getReadableKey(cfg.hotkeys.EMERGENCY_EXIT_KEY) << "\n";
-    g_hInst = hInstance;
-    HICON hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
-    HICON hIconSmall = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON_SMALL));
-    if (!hIcon || !hIconSmall) {
-        MessageBoxA(nullptr, "Failed to load application icons!", "Error", MB_ICONERROR);
-        return -1;
-    }
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
+
+    dpi_aware();
+    const auto started = std::chrono::steady_clock::now();
+    Gdiplus::GdiplusStartupInput gsi;
+    ULONG_PTR gdiplus = 0;
+    Gdiplus::GdiplusStartup(&gdiplus, &gsi, nullptr);
+
+    std::error_code ec;
+    fs::create_directories(L"midi", ec);
+    bool fresh = !fs::exists(L"config.json", ec);
+    std::vector<std::string> warnings = cfg().loadFromFile("config.json");
+    if (fresh || !fs::exists(L"config.json", ec))
+        save_config();
+    ui::set_dark(cfg().ui.darkMode < 0 ? system_dark() : cfg().ui.darkMode == 1);
+    ShowSplashScreen(inst);
+    opt_out_of_throttling();
+    input::init();
+    input::set_guard(cfg().playback.gameWindowOnly);
+    out::reload();
+
+    g.inst = inst;
+    WNDCLASSEXW wc{ sizeof(wc) };
     wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInstance;
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    wc.lpszClassName = L"MIDI++";
-    wc.hIcon = hIcon;
-    wc.hIconSm = hIconSmall;
+    wc.lpfnWndProc = wnd_proc;
+    wc.hInstance = inst;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = kClass;
+    wc.hIcon = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP_ICON_SMALL), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     RegisterClassExW(&wc);
-    g_hMainWnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_LAYERED | WS_EX_TOPMOST,
-        wc.lpszClassName,
-        L"MIDI++ v1.0.4.R5",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        Layout::WIN_W, Layout::WIN_H,
-        nullptr,
-        nullptr,
-        hInstance,
-        nullptr);
 
-    SetLayeredWindowAttributes(g_hMainWnd, 0, 255, LWA_ALPHA);
-
-    if (!g_hMainWnd) {
-        MessageBoxA(nullptr, "Failed to create main window!", "Error", MB_ICONERROR);
-        return -1;
+    HDC screen = GetDC(nullptr);
+    const int sysDpi = GetDeviceCaps(screen, LOGPIXELSX);
+    ReleaseDC(nullptr, screen);
+    HWND wnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_LAYERED, kClass, kTitle,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+        CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(880, sysDpi, 96), MulDiv(760, sysDpi, 96), nullptr, nullptr, inst, nullptr);
+    if (!wnd) {
+        CloseSplashScreen();
+        MessageBoxW(nullptr, L"Failed to create main window!", L"Error", MB_ICONERROR);
+        return 1;
     }
-    SetTimer(NULL, 1, 100, [](HWND, UINT, UINT_PTR timerId, DWORD) {
-        KillTimer(NULL, timerId);
-        if (g_hMainWnd) {
-            if (IsIconic(g_hMainWnd)) {
-                ShowWindow(g_hMainWnd, SW_RESTORE);
-            }
-        }
-        });
-    ShowWindow(g_hMainWnd, SW_SHOW);
-    UpdateWindow(g_hMainWnd);
+
+    g_player = &g.player;
+    g.player.set_output(cfg().playback.output);
+    g.player.set_batching(cfg().playback.batchMs);
+    g.player.start(wnd, WM_APP_PLAYER);
+    g.hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, on_foreground, 0, 0, WINEVENT_OUTOFCONTEXT);
+    g.hotkeys = std::thread(hotkey_loop);
+
+    say(" ===== MIDI++ v1.0.6 | Developed by Zeph, Tested by Gene =====");
+    say("Hotkeys: %s play/pause, %s rewind, %s skip, %s stop all keys",
+        input::key_label(cfg().hotkeys.PLAY_PAUSE_KEY).c_str(), input::key_label(cfg().hotkeys.REWIND_KEY).c_str(),
+        input::key_label(cfg().hotkeys.SKIP_KEY).c_str(), input::key_label(cfg().hotkeys.EMERGENCY_EXIT_KEY).c_str());
+    for (const std::string& w : warnings)
+        say("[Config] %s", w.c_str());
+
+    layout();
+    auto elapsed = std::chrono::steady_clock::now() - started;
+    if (elapsed < std::chrono::milliseconds(900))
+        std::this_thread::sleep_for(std::chrono::milliseconds(900) - elapsed);
+    CloseSplashScreen();
+    ShowWindow(wnd, SW_SHOW);
+    UpdateWindow(wnd);
 
     MSG msg;
-    while (GetMessage(&msg, nullptr, 0, 0) > 0) {
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        DispatchMessageW(&msg);
     }
+
+    g.quit = true;
+    if (g.hotkeys.joinable())
+        g.hotkeys.join();
+    if (g.hook)
+        UnhookWinEvent(g.hook);
+    Gdiplus::GdiplusShutdown(gdiplus);
+    if (single)
+        CloseHandle(single);
     return static_cast<int>(msg.wParam);
 }

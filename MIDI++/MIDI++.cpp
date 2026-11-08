@@ -865,7 +865,7 @@ namespace {
             return;
         }
         live::set_channel(cfg().ui.midiChannel);
-        live::set_key(g.key);
+        live::set_key(g.key - g.gameTranspose);
         if (m == out::Mode::Keys && cfg().playback.autoVolume)
             out::calibrate_volume();
         show_live_rows(true);
@@ -1067,21 +1067,37 @@ namespace {
         SetWindowTextW(g.latency, lat);
     }
 
+    TransposePlan plan_transpose() {
+        TransposeOptions o;
+        o.layout = cfg().playback.keys88 ? "FULL" : "LIMITED";
+        o.fold = cfg().playback.outOfRange;
+        o.batchMs = cfg().playback.batchMs;
+        o.key = g.key;
+        o.range = 12;
+        const std::vector<TrackControl::TrackInfo> rows = g.liveRows ? g.songRows : g.tracks.Tracks();
+        const bool solo = std::any_of(rows.begin(), rows.end(), [](const TrackControl::TrackInfo& i) { return i.isSoloed; });
+        for (const TrackControl::TrackInfo& r : rows)
+            o.tracks.push_back(solo ? r.isSoloed : !r.isMuted);
+        return TransposeEngine().plan(*g.song, o);
+    }
+
     int suggest_transpose() {
         if (!g.song)
             return 0;
-        std::vector<int> notes;
-        std::vector<double> durations;
-        g.song->notes_and_durations(notes, durations, 200000);
-        if (notes.empty()) {
+        const TransposePlan p = plan_transpose();
+        if (!p.total) {
             say("[TRANSPOSE] No notes.");
             return 0;
         }
-        TransposeEngine te;
-        std::string key = te.estimateKey(notes, durations);
-        std::string genre = te.detectGenre(notes, durations, g.song->bpm, g.song->tsNum);
-        say("Detected key: %s, genre: %s", key.c_str(), genre.c_str());
-        return te.findBestTranspose(notes, durations, key, genre);
+        say("[TRANSPOSE] %s (%.0f%%), game %+d: out of range %d -> %d, shift/ctrl %d -> %d, same key %d -> %d",
+            p.key.c_str(), p.keyConfidence * 100.0, p.semitones, p.unshifted.outOfRange, p.outOfRange,
+            p.unshifted.needsModifier, p.needsModifier, p.unshifted.sameKeyCollisions, p.sameKeyCollisions);
+        return p.semitones;
+    }
+
+    void apply_key() {
+        g.player.set_key(g.key - g.gameTranspose);
+        live::set_key(g.key - g.gameTranspose);
     }
 
     LoadOptions options() {
@@ -1199,7 +1215,7 @@ namespace {
     void start_playing(bool restart) {
         aim("Playing");
         begin_output();
-        if ((g.freshSong || restart) && cfg().auto_transpose.ENABLED) {
+        if ((g.freshSong || restart) && cfg().auto_transpose.ENABLED && cfg().playback.output == midi::OutputMode::Keys) {
             int want = suggest_transpose();
             int diff = want - g.gameTranspose;
             if (diff) {
@@ -1207,6 +1223,7 @@ namespace {
                 g.player.transpose(diff);
                 g.gameTranspose = want;
             }
+            apply_key();
         }
         g.freshSong = false;
         if (restart)
@@ -1579,8 +1596,7 @@ namespace {
         case ID_BTN_KEYUP:
         case ID_BTN_KEYDN: {
             g.key = std::clamp(g.key + (id == ID_BTN_KEYUP ? 1 : -1), -24, 24);
-            g.player.set_key(g.key);
-            live::set_key(g.key);
+            apply_key();
             show_key();
             say("[KEY] %+d semitones", g.key);
             break;
@@ -1647,9 +1663,12 @@ namespace {
             if (!need_song())
                 break;
             {
-                int best = suggest_transpose();
-                std::wstring text = L"Suggested transpose: [" + std::to_wstring(best) + L"]";
-                MessageBoxW(wnd, text.c_str(), L"Transpose Suggestion", MB_OK | MB_ICONINFORMATION);
+                const TransposePlan p = plan_transpose();
+                wchar_t text[320];
+                swprintf_s(text, L"Key: %hs (%.0f%%)\nSuggested transpose: [%d]\nOut of range: %d -> %d\nShift/Ctrl notes: %d -> %d\nSame-key clashes: %d -> %d",
+                    p.key.c_str(), p.keyConfidence * 100.0, p.semitones, p.unshifted.outOfRange, p.outOfRange,
+                    p.unshifted.needsModifier, p.needsModifier, p.unshifted.sameKeyCollisions, p.sameKeyCollisions);
+                MessageBoxW(wnd, text, L"Transpose Suggestion", MB_OK | MB_ICONINFORMATION);
             }
             break;
         case ID_CB_MIDIDEV:

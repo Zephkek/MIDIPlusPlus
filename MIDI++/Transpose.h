@@ -1,9 +1,52 @@
 #pragma once
+#include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
-#include <array>
-#include <set>
-#include <map>
+
+struct Song;
+
+struct ShiftScore {
+    int noteShift = 0;
+    double cost = 0.0;
+    int outOfRange = 0;
+    int needsModifier = 0;
+    int sameKeyCollisions = 0;
+    int mixedChords = 0;
+};
+
+struct KeySpan {
+    int64_t start = 0;
+    int64_t end = 0;
+    int key = -1;
+    std::string name;
+};
+
+struct TransposePlan {
+    int semitones = 0;
+    int noteShift = 0;
+    std::string key = "Unknown";
+    std::string playedKey = "Unknown";
+    int keyIndex = -1;
+    double keyConfidence = 0.0;
+    int outOfRange = 0;
+    int needsModifier = 0;
+    int sameKeyCollisions = 0;
+    int total = 0;
+    ShiftScore unshifted;
+    std::vector<ShiftScore> shifts;
+    std::vector<KeySpan> keys;
+};
+
+struct TransposeOptions {
+    std::string layout = "LIMITED";
+    std::vector<bool> tracks;
+    bool fold = false;
+    bool keepPitch = true;
+    int key = 0;
+    int range = 24;
+    int batchMs = -1;
+};
 
 class TransposeEngine {
 public:
@@ -16,67 +59,10 @@ public:
         const std::vector<double>& durations,
         const std::string& detectedKey,
         const std::string& genre) const;
-
+    [[nodiscard]] TransposePlan plan(const Song& song, const TransposeOptions& options = {}) const;
+    [[nodiscard]] TransposePlan plan(const Song& song, const std::map<std::string, std::string>& keys,
+        const TransposeOptions& options = {}) const;
 
 private:
-    static constexpr std::array<const char*, 12> NOTE_NAMES = {
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
-    };
-    static constexpr std::array<int, 12> KEY_COMPLEXITY = { 0, 5, 2, 7, 4, 1, 6, 3, 8, 5, 2, 7 };
-
-    const std::vector<int> commonClassicalKeys = { 0, 2, 4, 5, 7, 9, 11 };
-    const std::vector<int> commonJazzKeys = { 0, 5, 7, 10, 3 };
-    const std::vector<int> commonPopKeys = { 0, 5, 7, 2, 9 };
-    const std::vector<int> commonContemporaryKeys = { 0, 2, 4, 5, 7, 9, 11 };
-
-    // Utility function
-    [[nodiscard]] static constexpr int getPitchClass(int midiNote) noexcept {
-        return midiNote % 12;
-    }
-    [[nodiscard]] std::vector<double> computePitchClassDistribution(
-        const std::vector<int>& notes,
-        const std::vector<double>& durations) const;
-    void adjustKeyEstimate(const std::vector<double>& pitchDistribution,
-        int& bestTonic,
-        std::string& bestMode) const;
-
     [[nodiscard]] double calculateRhythmComplexity(const std::vector<double>& durations) const;
-    [[nodiscard]] double calculateNoteDistributionEntropy(const std::vector<int>& notes,
-        int transpose) const;
-    [[nodiscard]] double calculateIntervalComplexity(const std::vector<int>& notes,
-        int transpose) const;
-    [[nodiscard]] double calculateVoiceLeadingSmoothness(const std::vector<int>& notes,
-        int transpose) const;
-    [[nodiscard]] double calculateHarmonicSmoothness(const std::vector<int>& notes,
-        int transpose) const;
-    [[nodiscard]] double calculateMicrotonalPenalty(const std::vector<int>& notes,
-        int transpose) const;
-    [[nodiscard]] double calculateGenreSpecificTransposeScore(int newKeyIndex,
-        int keySignatureComplexity,
-        const std::string& genre,
-        int transpose) const;
-    [[nodiscard]] double calculateCenterAlignmentScore(int minNote, int maxNote) const;
-
-    [[nodiscard]] double calculateAdaptiveTuningAdjustment(const std::vector<int>& notes,
-        int transpose) const;
-    [[nodiscard]] double calculatePsychoacousticBalance(const std::vector<int>& notes,
-        int transpose) const;
-
-    struct TransposeScore {
-        double baseScore = 0.0;
-        double entropy = 0.0;
-        double intervals = 0.0;
-        double voiceLeading = 0.0;
-        double harmonicSmoothness = 0.0;
-        double microtonal = 0.0;
-        double adaptiveTuning = 0.0;
-        double psychoacoustic = 0.0;
-        double genre = 0.0;
-        double center = 0.0;
-        double total = 0.0;
-    };
-
-    [[nodiscard]] TransposeScore evaluateTranspose(const std::vector<int>& notes,
-        int transpose,
-        const std::string& genre) const;
 };

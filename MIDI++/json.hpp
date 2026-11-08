@@ -1,4 +1,4 @@
-﻿//     __ _____ _____ _____
+//     __ _____ _____ _____
 //  __|  |   __|     |   | |  JSON for Modern C++
 // |  |  |__   |  |  | | | |  version 3.11.3
 // |_____|_____|_____|_|___|  https://github.com/nlohmann/json
@@ -16884,7 +16884,7 @@ NLOHMANN_JSON_NAMESPACE_END
 // |  |  |__   |  |  | | | |  version 3.11.3
 // |_____|_____|_____|_|___|  https://github.com/nlohmann/json
 //
-// SPDX-FileCopyrightText: 2008-2009 Bj�rn Hoehrmann <bjoern@hoehrmann.de>
+// SPDX-FileCopyrightText: 2008-2009 Bjoern Hoehrmann <bjoern@hoehrmann.de>
 // SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
 // SPDX-License-Identifier: MIT
 

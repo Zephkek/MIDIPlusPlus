@@ -178,9 +178,32 @@
         "TIMING_VARIATION": 0.1
     },
     "MIDI_SETTINGS": {
-        "DETECT_DRUMS": true
+        "DETECT_DRUMS": true,
+        "KERNEL_STREAMING": true,
+        "LIVE_WAIT_MODE": "BLOCK"
     },
+    "PLAYBACK_SETTINGS": {
+        "88_KEYS": false,
+        "GAME_WINDOW_ONLY": true,
+        "KEY_BATCHING_MS": -1,
+        "OUTPUT": "KEYS",
+        "OUT_OF_RANGE_TRANSPOSE": false,
+        "SUSTAIN_CUTOFF": 64,
+        "SUSTAIN_MODE": "IGNORE",
+        "TYPED_KEYS": false,
+        "VELOCITY_CURVE": 0,
+        "VELOCITY_KEYS": false
+    },
+    "PLAYLIST_FILES": [],
     "STACKED_NOTE_HANDLING_MODE": "LIFO",
+    "UI_SETTINGS": {
+        "alwaysOnTop": false,
+        "darkMode": -1,
+        "midiChannel": -1,
+        "midiDevice": "",
+        "opacity": 255,
+        "sortMode": 0
+    },
     "VOLUME_SETTINGS": {
         "ADJUSTMENT_INTERVAL_MS": 50,
         "INITIAL_VOLUME": 100,

@@ -2,7 +2,7 @@
     KSMidi Core Implementation - KSMidi.cpp
     Author: Mohamed Maatallah
     Date: June 28, 2025 (1.1.0: August 2026)
-    Version: 1.1.0 (see CHANGELOG.md)
+    Version: 1.1.0
 
     This is the full internal implementation of the KSMidi library,
     responsible for interfacing directly with Windows Kernel Streaming (KS)
@@ -44,11 +44,6 @@
 #include <mmddk.h>
 #include <setupapi.h>
 
-// KSDATAFORMAT_SUBTYPE_UNIVERSALMIDIPACKET (UMP pins) is only declared by Windows SDK 10.0.26100+
-// headers and only when NTDDI_VERSION >= NTDDI_WIN11_GE (ksmedia.h). The GUID itself is public
-// and fixed, so KSMidi defines it the same way when the headers do not (B6): the library then
-// builds with older SDKs and lower Windows targets; UMP pins simply never match on systems
-// without a UMP driver.
 #ifndef STATIC_KSDATAFORMAT_SUBTYPE_UNIVERSALMIDIPACKET
 #define STATIC_KSDATAFORMAT_SUBTYPE_UNIVERSALMIDIPACKET \
     0xfbffd49e, 0xce26, 0x464a, 0x9d, 0xfc, 0xfe, 0xe4, 0x24, 0x56, 0xc8, 0x1c
@@ -69,9 +64,9 @@ DEFINE_GUIDSTRUCT("FBFFD49E-CE26-464A-9DFC-FEE42456C81C", KSDATAFORMAT_SUBTYPE_U
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "ksuser.lib")
 #pragma comment(lib, "avrt.lib")
-#pragma comment(lib, "advapi32.lib")  // RegQueryValueExW / RegCloseKey (DeviceEnumerator::getFriendlyName)
-#pragma comment(lib, "winmm.lib")     // Transport::Shared and the Windows names of the ports
-#pragma comment(lib, "cfgmgr32.lib")  // the Windows MIDI Services endpoint of each port
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "cfgmgr32.lib")
 
 // Aligns a value up to the nearest alignment boundary
 #define KS_ALIGN_UP(v, a) (((v) + (a) - 1) & ~((a) - 1))
@@ -94,7 +89,6 @@ namespace ksmidi {
         using UniqueDevInfo =
             std::unique_ptr<std::remove_pointer_t<HDEVINFO>, DevInfoDeleter>;
 
-        // " (0x8007xxxx): <system message>" for a failure code, nothing for S_OK (R6).
         static std::string FormatWinError(HRESULT err) {
             if (err == S_OK) return {};
             char* msg = nullptr;
@@ -105,7 +99,6 @@ namespace ksmidi {
                 reinterpret_cast<LPSTR>(&msg), 0, nullptr);
             std::string text = (len > 0 && msg) ? std::string(msg, len) : std::string();
             if (msg) LocalFree(msg);
-            // FormatMessage ends its text with CR/LF: strip trailing whitespace
             while (!text.empty() && (text.back() == '\r' || text.back() == '\n' ||
                 text.back() == ' ' || text.back() == '\t'))
                 text.pop_back();
@@ -116,35 +109,20 @@ namespace ksmidi {
             return os.str();
         }
 
-        // --- Pin I/O (test seam) ---
-        // MidiIn and MidiOut open the filter, create the pin and change its state through this
-        // interface, and the input reader also submits and cancels its overlapped reads through
-        // it. Production code always uses KsPinIo (CreateFileW, KsCreatePin and the KS IOCTLs).
-        // The interface only exists so that the hardware-free unit tests (tests/unit) can run
-        // the real opening code and reader thread against a simulated driver.
+        // --- Pin I/O ---
         class PinIo {
         public:
             virtual ~PinIo() = default;
-            // Same contract as CreateFileW on the filter's device interface path
-            // (OPEN_EXISTING): a handle, or INVALID_HANDLE_VALUE and GetLastError().
             virtual HANDLE openFilter(const std::wstring& path, DWORD access, DWORD shareMode,
                 DWORD flags) = 0;
-            // Creates a pin on the filter: S_OK and the pin handle, or a failure HRESULT.
             virtual HRESULT createPin(HANDLE filter, PKSPIN_CONNECT connect, ACCESS_MASK access,
                 HANDLE* pin) = 0;
-            // Same contract as an overlapped DeviceIoControl: TRUE = completed now,
-            // FALSE + GetLastError() == ERROR_IO_PENDING = queued, anything else = failed.
             virtual BOOL submitRead(HANDLE pin, KSSTREAM_HEADER& header,
                 OVERLAPPED& overlapped) = 0;
             virtual BOOL cancelAll(HANDLE pin) = 0;
             virtual BOOL setState(HANDLE pin, KSSTATE state) = 0;
         };
 
-        // A request that waits for its own completion. A pin handle from KsCreatePin is
-        // asynchronous (KsCreatePin opens it without FILE_SYNCHRONOUS_IO_*), and for such a handle
-        // DeviceIoControl needs an OVERLAPPED with an event (N10); without one it waits on the
-        // handle itself, which any other completion on the pin can signal. Same pattern as
-        // Microsoft's SyncIoctl (microsoft/MIDI, MidiKSCommon.cpp). `event` is manual-reset.
         inline BOOL syncIoctl(HANDLE handle, DWORD code, void* in, DWORD inSize, void* out,
             DWORD outSize, DWORD* returned, HANDLE event) {
             OVERLAPPED overlapped{};
@@ -164,8 +142,6 @@ namespace ksmidi {
             }
             HRESULT createPin(HANDLE filter, PKSPIN_CONNECT connect, ACCESS_MASK access,
                 HANDLE* pin) override {
-                // In user mode KsCreatePin returns a Win32 error code, not an HRESULT (N7): a
-                // refused pin was taken for a success, and the next IOCTL failed on a null handle.
                 const DWORD err = KsCreatePin(filter, connect, access, pin);
                 return err == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(err);
             }
@@ -184,7 +160,7 @@ namespace ksmidi {
                 if (!event) return FALSE;
                 const BOOL ok = syncIoctl(pin, IOCTL_KS_PROPERTY, &p, sizeof(p), &state,
                     sizeof(state), &br, event.get());
-                const DWORD error = GetLastError();  // the callers report it
+                const DWORD error = GetLastError();
                 event.reset();
                 SetLastError(error);
                 return ok;
@@ -196,8 +172,6 @@ namespace ksmidi {
             return io;
         }
 
-        // Joins the calling thread to an MMCSS task (e.g. "Pro Audio") for the lifetime of the
-        // object and reverts it afterwards (R1). Failure is not fatal: error() tells why.
         class MmcssScope {
         public:
             MmcssScope(bool enable, const std::wstring& task) {
@@ -219,19 +193,14 @@ namespace ksmidi {
             DWORD error_ = 0;
         };
 
-        // Thread placement and power throttling (Settings::preferPerformanceCores,
-        // Settings::disablePowerThrottling). The Windows 10 functions are looked up at run time,
-        // so KSMidi still builds for lower Windows targets (B6); without them the options do
-        // nothing. THREAD_POWER_THROTTLING_STATE and the ThreadPowerThrottling class are
-        // declared here for the same reason (processthreadsapi.h, Windows 10 1709).
         struct ThreadPowerThrottlingState {
             ULONG Version;
             ULONG ControlMask;
             ULONG StateMask;
         };
-        constexpr int kThreadPowerThrottling = 3;       // THREAD_INFORMATION_CLASS value
-        constexpr ULONG kThrottlingCurrentVersion = 1;  // ..._CURRENT_VERSION
-        constexpr ULONG kThrottleExecutionSpeed = 0x1;  // ..._EXECUTION_SPEED
+        constexpr int kThreadPowerThrottling = 3;
+        constexpr ULONG kThrottlingCurrentVersion = 1;
+        constexpr ULONG kThrottleExecutionSpeed = 0x1;
 
         class ThreadApi {
         public:
@@ -261,8 +230,6 @@ namespace ksmidi {
             }
         };
 
-        // CPU set ids of the cores with the highest EfficiencyClass ("faster but less
-        // power-efficient", SYSTEM_CPU_SET_INFORMATION), or none if all cores have the same class.
         inline std::vector<ULONG> performanceCpuSets() {
             std::vector<ULONG> ids;
             const auto getInfo = ThreadApi::get().getCpuSetInfo;
@@ -274,8 +241,7 @@ namespace ksmidi {
             if (!getInfo(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buf.data()), len, &len,
                 GetCurrentProcess(), 0))
                 return ids;
-            // entries are variable-sized: step by Size, skip other types
-            std::vector<std::pair<ULONG, BYTE>> sets;  // id, efficiency class
+            std::vector<std::pair<ULONG, BYTE>> sets;
             for (ULONG off = 0; off + 2 * sizeof(DWORD) <= len;) {
                 const auto* e =
                     reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buf.data() + off);
@@ -289,14 +255,12 @@ namespace ksmidi {
                 lowest = (std::min)(lowest, s.second);
                 highest = (std::max)(highest, s.second);
             }
-            if (lowest >= highest) return ids;  // a single class: nothing to prefer
+            if (lowest >= highest) return ids;
             for (const auto& s : sets)
                 if (s.second == highest) ids.push_back(s.first);
             return ids;
         }
 
-        // Applies the placement and power options to the calling thread. Returns false if a
-        // requested option is not supported by this Windows or was refused.
         inline bool tuneCurrentThread(bool performanceCores, bool noPowerThrottling) {
             bool ok = true;
             if (performanceCores) {
@@ -310,7 +274,6 @@ namespace ksmidi {
             }
             if (noPowerThrottling) {
                 const auto setInfo = ThreadApi::get().setThreadInfo;
-                // ControlMask selects execution speed throttling, StateMask 0 turns it off
                 ThreadPowerThrottlingState state{ kThrottlingCurrentVersion,
                     kThrottleExecutionSpeed, 0 };
                 ok = setInfo && setInfo(GetCurrentThread(), kThreadPowerThrottling, &state,
@@ -319,8 +282,6 @@ namespace ksmidi {
             return ok;
         }
 
-        // Polling waits (Settings::waitMode): QPC ticks of a spin time, and a read check that
-        // the compiler cannot hoist out of the polling loop.
         inline long long spinTicks(unsigned int microseconds) {
             LARGE_INTEGER f;
             QueryPerformanceFrequency(&f);
@@ -335,10 +296,7 @@ namespace ksmidi {
             return *static_cast<const volatile ULONG_PTR*>(&o.Internal) != STATUS_PENDING;
         }
 
-        // --- Output framing (test seams) ---
-        // Bytes MidiOut::sendMessage(const ump::UmpMessage&) writes for one UMP: its 32-bit words
-        // in host byte order, the representation the UMP parser reads back (P7). A size of 0
-        // means "not set": the size is then taken from the Message Type.
+        // --- Output framing ---
         inline size_t umpToBytes(const ump::UmpMessage& message, BYTE(&out)[16]) {
             const size_t words = message.size_in_words == 0
                 ? ump::getPacketSizeInWords(ump::getMessageType(message))
@@ -347,17 +305,8 @@ namespace ksmidi {
             return words * 4;
         }
 
-        // KSMUSICFORMAT records "MUST be dword aligned regardless of the number of data bytes"
-        // (ksmedia.h, SDK 10.0.26100) - Microsoft Learn: "the subsequent structure ... should
-        // be DWORD aligned" (P3).
         constexpr size_t kKsEventAlignment = 4;
 
-        // Builds the KS write frame (KSMUSICFORMAT + data + zeroed padding) for one MIDI event
-        // in `buffer` and fills the stream header that MidiOut passes to
-        // IOCTL_KS_WRITE_STREAM. Same layout as Microsoft's own KS writer
-        // (microsoft/MIDI src/in-box/Libs/MidiKs/MidiKs.cpp, KSMidiOutDevice::WriteMidiData):
-        // DataUsed = FrameExtent = DWORD_ALIGN(sizeof(KSMUSICFORMAT) + size), ByteCount = size,
-        // TimeDeltaMs = 0, PresentationTime Numerator = Denominator = 1 (P3).
         inline void buildWriteFrame(std::vector<BYTE>& buffer, const BYTE* message,
             size_t size, KSSTREAM_HEADER& header) {
             const size_t frameSize = KS_ALIGN_UP(sizeof(KSMUSICFORMAT) + size, kKsEventAlignment);
@@ -407,7 +356,7 @@ namespace ksmidi {
                 size_t sysexChunkSize{ 1024 };
             };
             Config config;
-            size_t signalsSent = 0;  // diagnostic: consumer wake-ups (SetEvent calls) issued by this parser
+            size_t signalsSent = 0;
 
             MidiParser() {
                 message_buffer_.reserve(4);
@@ -416,8 +365,6 @@ namespace ksmidi {
                 }
             }
 
-            // Parses `size` bytes; returns true if at least one message was queued. It does not
-            // wake the consumer: the input path signals once per completed KS buffer (R2).
             bool process(const BYTE* data, DWORD size,
                 LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName, double timestamp) {
@@ -429,7 +376,6 @@ namespace ksmidi {
                 }
                 return messagePushed;
             }
-            // Convenience overload: parses and signals `eventToSignal` if something was queued.
             void process(const BYTE* data, DWORD size,
                 LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName, double timestamp,
@@ -440,8 +386,6 @@ namespace ksmidi {
                 }
             }
 
-            // Delivers a SysEx that is still open (e.g. when the port closes) as an
-            // unterminated chunk (isSysExChunk == true, no F7).
             bool flush(LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName,
                 double timestamp,
@@ -461,16 +405,6 @@ namespace ksmidi {
             }
 
         private:
-            // MIDI 1.0 Detailed Specification 4.2:
-            // - Real-time bytes (F8-FF) "may be inserted between data bytes of an Exclusive
-            //   message" and anywhere else; they never change the parser state or running status.
-            // - SysEx is "terminated either by an End of Exclusive (EOX) or any other Status byte
-            //   (except Real Time messages)". An unfinished SysEx ended by a status byte is
-            //   delivered as its final piece (isSysExChunk == false, without F7), then the status
-            //   byte starts the next message as usual.
-            // SysEx chunking: a piece of exactly sysexChunkSize bytes is delivered with
-            // isSysExChunk == true when the next SysEx byte arrives; every SysEx ends with exactly
-            // one piece with isSysExChunk == false (1..sysexChunkSize bytes).
             bool parseByte(BYTE byte, LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName, double timestamp)
             {
@@ -487,7 +421,6 @@ namespace ksmidi {
                         if (config.ignoreSysex) return pushed;
                         return emitSysEx(false, queue, sourceName, timestamp) || pushed;
                     }
-                    // any other status byte ends the SysEx, then is parsed normally
                     state_ = State::Idle;
                     runningStatus_ = 0;
                     const bool pushed = !config.ignoreSysex && !sysex_buffer_.empty() &&
@@ -498,7 +431,6 @@ namespace ksmidi {
                 if (byte >= 0x80)
                     return handleStatus(byte, queue, sourceName, timestamp);
 
-                // data byte
                 if (state_ == State::Idle) {
                     if (runningStatus_ == 0) return false;
                     message_buffer_.clear();
@@ -514,7 +446,6 @@ namespace ksmidi {
                 return false;
             }
 
-            // Status byte F0-F7 or channel status (never real-time).
             bool handleStatus(BYTE byte, LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName, double timestamp)
             {
@@ -533,17 +464,10 @@ namespace ksmidi {
                 message_buffer_.push_back(byte);
                 bytesNeeded_ = kBytesNeeded[byte];
                 state_ = (bytesNeeded_ > 0) ? State::ExpectData : State::Idle;
-                // running status: channel messages only; system common (F1-F7, incl. the
-                // undefined F4/F5) clears it
                 runningStatus_ = (byte < 0xF0) ? byte : 0;
                 return (bytesNeeded_ == 0) ? handleCompleteMessage(queue, sourceName, timestamp) : false;
             }
 
-            // Filters follow RtMidi's ignoreTypes() (RtMidi.cpp: MidiInApi::ignoreTypes and the
-            // WinMM/CoreMIDI/ALSA input handlers): the time flag drops F1 (MTC quarter frame) and
-            // F8 (timing clock), the sense flag drops FE (active sensing). Start/Continue/Stop,
-            // System Reset and the other system messages are never dropped. F9/FD are undefined
-            // and always ignored (MIDI 1.0 4.2).
             bool handleRealTime(BYTE byte, LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName, double timestamp)
             {
@@ -563,7 +487,6 @@ namespace ksmidi {
                 return false;
             }
 
-            // Adds one SysEx byte; delivers the buffered piece first if it is already full.
             bool appendSysEx(BYTE byte, LockFreeSPSCQueue<MidiMessage>& queue,
                 const std::string& sourceName, double timestamp)
             {
@@ -601,7 +524,6 @@ namespace ksmidi {
                 else if (status == 0xF2 || status == 0xF3 || status == 0xF6) {
                     shouldPush = true;  // song position, song select, tune request
                 }
-                // F4/F5 (undefined) and a stray F7 are ignored
                 if (shouldPush) {
                     MidiMessage msg;
                     msg.timestamp = timestamp;
@@ -625,9 +547,8 @@ namespace ksmidi {
         // --- MIDI 2.0 UMP Parser ---
         class UmpParser {
         public:
-            size_t signalsSent = 0;  // diagnostic: consumer wake-ups (SetEvent calls) issued by this parser
+            size_t signalsSent = 0;
 
-            // Parses `size` bytes; returns true if at least one packet was queued (no signal, R2).
             bool process(const BYTE* data, DWORD size,
                 LockFreeSPSCQueue<ump::UmpMessage>& queue,
                 const std::string& sourceName, double timestamp) {
@@ -639,7 +560,6 @@ namespace ksmidi {
                 }
                 return messagePushed;
             }
-            // Convenience overload: parses and signals `eventToSignal` if something was queued.
             void process(const BYTE* data, DWORD size,
                 LockFreeSPSCQueue<ump::UmpMessage>& queue,
                 const std::string& sourceName, double timestamp,
@@ -651,14 +571,6 @@ namespace ksmidi {
             }
 
         private:
-            // Byte order (P7): a UMP in a Windows kernel-streaming buffer is a sequence of 32-bit
-            // words in host byte order (little-endian on every Windows architecture). That is how
-            // Windows MIDI Services moves UMP: its USB MIDI 2.0 class driver
-            // (microsoft/MIDI src/in-box/Drivers/USBMIDI2/Driver/Device.cpp) stores a packet as
-            // `UINT32 umpData[4]` after a UMPDATAFORMAT header, copies USB MIDI 2.0 words
-            // verbatim and RtlUlongByteSwap()s its own MIDI 1.0 -> UMP conversions into that
-            // order. MidiOut writes the same representation (internal::umpToBytes), so a UMP
-            // sent by KSMidi parses back to the same words.
             bool parseByte(BYTE byte, LockFreeSPSCQueue<ump::UmpMessage>& queue,
                 const std::string& sourceName, double timestamp) {
                 wordBytes_[wordFill_++] = byte;
@@ -667,7 +579,6 @@ namespace ksmidi {
                 uint32_t word;
                 std::memcpy(&word, wordBytes_.data(), sizeof(word));  // host order
                 if (wordsReceived_ == 0) {
-                    // first word: the Message Type (top 4 bits) gives the packet size (P6)
                     wordsExpected_ = ump::getPacketSizeInWords(static_cast<uint8_t>(word >> 28));
                 }
                 packet_[wordsReceived_++] = word;
@@ -683,19 +594,14 @@ namespace ksmidi {
                 return queue.try_push(std::move(msg));
             }
 
-            std::array<BYTE, 4> wordBytes_{};      // bytes of the word being assembled
+            std::array<BYTE, 4> wordBytes_{};
             uint8_t wordFill_ = 0;
-            std::array<uint32_t, 4> packet_{};     // words of the packet being assembled
+            std::array<uint32_t, 4> packet_{};
             uint8_t wordsReceived_ = 0;
             uint8_t wordsExpected_ = 0;
         };
 
-        // --- Ports as Windows lists them (Transport::Shared) ---
-        // WinMM reports the kernel-streaming filter behind each of its MIDI devices
-        // (DRV_QUERYDEVICEINTERFACE), as a KSCATEGORY_AUDIO interface, where the KS enumeration
-        // finds the same filter as a KSCATEGORY_CAPTURE or KSCATEGORY_RENDER interface. The key
-        // of a filter is its path without the interface class GUID, in lower case:
-        // "\\?\root#media#0002#{6994ad04-...}\tevmidi0" -> "\\?\root#media#0002#\tevmidi0".
+        // --- Ports as Windows lists them ---
         inline std::wstring filterKey(std::wstring path) {
             const size_t open = path.find(L"#{");
             if (open != std::wstring::npos) {
@@ -709,7 +615,7 @@ namespace ksmidi {
         struct WinmmPort {
             UINT index = 0;
             std::string name;
-            std::wstring key;  // filterKey of its interface, empty if the driver reports none
+            std::wstring key;
         };
 
         inline std::wstring winmmInterface(bool input, UINT index) {
@@ -754,10 +660,6 @@ namespace ksmidi {
             return ports;
         }
 
-        // Position in `winmm` of the WinMM device behind devices[i], or SIZE_MAX. A filter with
-        // several MIDI pins of one direction has one WinMM device per pin, all with the filter's
-        // path: they are matched in pin order. A WinMM device without an interface path is
-        // matched by name.
         inline size_t matchWinmm(const std::vector<DeviceInfo>& devices, size_t i,
             const std::vector<WinmmPort>& winmm) {
             const std::wstring key = filterKey(devices[i].path);
@@ -780,15 +682,10 @@ namespace ksmidi {
         }
 
         // --- Windows MIDI Services view of the KS ports ---
-        // The MIDI service presents each KS MIDI 1.0 device as one UMP endpoint (interface class
-        // DEVINTERFACE_UNIVERSALMIDIPACKET_BIDI, transport code "KSA") in which every pin is a UMP
-        // group. DEVPKEY_KsAggMidiGroupPinMap on the endpoint lists, for each pin, its filter, pin id,
-        // data flow and group (microsoft/MIDI src/in-box/Inc/midi_ksa_pin_map_property.h). Reading
-        // these PnP properties does not involve the service process.
         struct ServicePin {
-            std::wstring key;        // filterKey of the pin's filter
+            std::wstring key;
             DWORD pinId = 0;
-            bool input = false;      // a capture pin: a MIDI input port for the application
+            bool input = false;
             int group = -1;
             std::wstring endpointId;
             std::string endpointName;
@@ -825,10 +722,6 @@ namespace ksmidi {
             return s;
         }
 
-        // Entries of a KSAGGMIDI_PIN_MAP_PROPERTY_VALUE: UINT32 TotalByteCount, then entries of
-        // ByteCount bytes each: ByteCount @0, BYTE GroupIndex @4, UINT32 PinId @8,
-        // MidiFlow PinDataFlow @12 (1 = data flows out of the pin: a capture pin), WCHAR FilterId[] @16.
-        // Entries are only 2-byte aligned, so every field is copied out.
         inline std::vector<ServicePin> parseKsaPinMap(const std::vector<BYTE>& blob) {
             std::vector<ServicePin> pins;
             if (blob.size() < 4) return pins;
@@ -871,7 +764,7 @@ namespace ksmidi {
                 return pins;
             for (const wchar_t* iface = list.data(); *iface; iface += wcslen(iface) + 1) {
                 auto entries = parseKsaPinMap(interfaceProperty(iface, kKsaPinMapKey, DEVPROP_TYPE_BINARY));
-                if (entries.empty()) continue;  // not a KS MIDI 1.0 (KSA) endpoint
+                if (entries.empty()) continue;
                 std::wstring name = stringProperty(iface, kCustomEndpointNameKey);
                 if (name.empty()) name = stringProperty(iface, DEVPKEY_DeviceInterface_FriendlyName);
                 const std::string endpointName = toUtf8(name);
@@ -884,7 +777,6 @@ namespace ksmidi {
             return pins;
         }
 
-        // Fills DeviceInfo::windowsName, sharedAvailable and the Windows MIDI Services fields.
         inline void attachWindowsPorts(std::vector<DeviceInfo>& devices, bool input) {
             const auto winmm = winmmPorts(input);
             const auto service = servicePins();
@@ -904,14 +796,12 @@ namespace ksmidi {
             }
         }
 
-        // The WinMM device index for port `portNumber` of a fresh enumeration, or UINT_MAX.
         inline UINT winmmIndexFor(const std::vector<DeviceInfo>& devices, size_t portNumber, bool input) {
             const auto winmm = winmmPorts(input);
             const size_t w = matchWinmm(devices, portNumber, winmm);
             return w == SIZE_MAX ? UINT_MAX : winmm[w].index;
         }
 
-        // A WinMM failure as a KsMidiError: WinMM's own text, and the closest HRESULT.
         inline KsMidiError winmmError(const std::string& what, MMRESULT result) {
             wchar_t text[MAXERRORLENGTH]{};
             midiInGetErrorTextW(result, text, MAXERRORLENGTH);
@@ -933,14 +823,11 @@ namespace ksmidi {
         // --- Device Enumeration ---
         class DeviceEnumerator {
         public:
-            // getClassDevs is a test seam (the unit tests inject a failing function).
             using GetClassDevsFn = HDEVINFO(WINAPI*)(const GUID*, PCWSTR, HWND, DWORD);
 
-            // withWindowsPorts: also fill DeviceInfo::windowsName and sharedAvailable (asks WinMM).
             static std::vector<DeviceInfo> enumerate(const GUID& category,
                 KSPIN_DATAFLOW flow, GetClassDevsFn getClassDevs = &SetupDiGetClassDevsW,
                 bool withWindowsPorts = false) {
-                // SetupDiGetClassDevs reports failure with INVALID_HANDLE_VALUE, not NULL (L6).
                 HDEVINFO rawDevInfo = getClassDevs(
                     &category, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
                 if (rawDevInfo == INVALID_HANDLE_VALUE || rawDevInfo == nullptr) {
@@ -1095,8 +982,6 @@ namespace ksmidi {
     }
 
     namespace internal {
-        // Port lookup for openPort(). The direct path does not ask WinMM, so opening a port
-        // never involves the Windows MIDI service.
         inline std::vector<DeviceInfo> listPorts(bool input, bool withWindowsPorts) {
             return input
                 ? DeviceEnumerator::enumerate(KSCATEGORY_CAPTURE, KSPIN_DATAFLOW_OUT,
@@ -1180,12 +1065,12 @@ namespace ksmidi {
                     return;
                 }
                 catch (const KsMidiError& e) {
-                    if (e.code() == E_INVALIDARG) throw;  // no such port: no other path either
+                    if (e.code() == E_INVALIDARG) throw;
                     try {
                         openSharedPort(portNumber);
                     }
                     catch (const KsMidiError&) {
-                        throw e;  // the reason the direct path failed is the useful one
+                        throw e;
                     }
                     return;
                 }
@@ -1200,7 +1085,6 @@ namespace ksmidi {
             openShared(devices[portNumber], internal::winmmIndexFor(devices, portNumber, false));
         }
 
-        // Transport::Shared: the port through WinMM. Called with mutex_ held, port closed.
         void openShared(const DeviceInfo& info, UINT winmmIndex) {
             if (winmmIndex == UINT_MAX)
                 throw KsMidiError("Output port '" + info.name +
@@ -1217,7 +1101,7 @@ namespace ksmidi {
             winmm_ = handle;
             winmmDone_ = std::move(done);
             info_ = info;
-            info_.supportsMidi2 = false;  // WinMM carries MIDI 1.0
+            info_.supportsMidi2 = false;
         }
 
         Transport activeTransport() const noexcept {
@@ -1225,10 +1109,6 @@ namespace ksmidi {
             return winmm_ ? Transport::Shared : Transport::Direct;
         }
 
-        // Opens the filter and the pin of the port described by `info` and starts the pin.
-        // Called with mutex_ held, after closePortImpl(). If a step fails, what was opened is
-        // closed again before the exception propagates (N4). Test seam: the unit tests call it
-        // with a simulated PinIo, since no port exists without a device.
         void openDevice(const DeviceInfo& info) {
             try {
                 info_ = info;
@@ -1270,14 +1150,12 @@ namespace ksmidi {
                 if (FAILED(hr)) throw KsMidiError("Failed to create output pin.", hr);
                 pin_.reset(rawPinHandle);
 
-                // STOP -> ACQUIRE -> PAUSE -> RUN, one step at a time (L8), as Microsoft's own KS
-                // MIDI client does (microsoft/MIDI src/in-box/Libs/MidiKs/MidiKs.cpp).
                 setPinState(KSSTATE_ACQUIRE);
                 setPinState(KSSTATE_PAUSE);
                 setPinState(KSSTATE_RUN);
             }
             catch (...) {
-                closePortImpl();  // a failed opening leaves the port closed (N4)
+                closePortImpl();
                 throw;
             }
         }
@@ -1318,9 +1196,6 @@ namespace ksmidi {
         }
 
     private:
-        // Transport::Shared. A complete channel or system message of up to 3 bytes is one WinMM
-        // short message; anything else (SysEx, several messages, running-status data) is sent as
-        // a long message, and the call returns when WinMM has finished with the buffer.
         void sendShared(const BYTE* message, size_t size) {
             if (size <= 3 && message[0] >= 0x80 && message[0] != 0xF0) {
                 DWORD packed = message[0];
@@ -1353,9 +1228,6 @@ namespace ksmidi {
                 winmmDone_.reset();
             }
             if (pin_) {
-                // Back to STOP one step at a time (L8), from the state the pin reached: a pin
-                // that failed to start is not asked to enter states it never reached (N4).
-                // Errors are ignored.
                 for (KSSTATE state : { KSSTATE_PAUSE, KSSTATE_ACQUIRE, KSSTATE_STOP }) {
                     if (state >= pinState_) continue;
                     try {
@@ -1367,7 +1239,6 @@ namespace ksmidi {
                 }
                 pin_.reset();
             }
-            // A failed opening may have opened the filter without creating a pin (N4).
             filter_.reset();
             info_ = {};
             pinState_ = KSSTATE_STOP;
@@ -1381,18 +1252,17 @@ namespace ksmidi {
                     HRESULT_FROM_WIN32(GetLastError()));
         }
 
-        internal::PinIo* io_ = &internal::ksPinIo();  // test seam; always KsPinIo in production
+        internal::PinIo* io_ = &internal::ksPinIo();
         mutable std::mutex mutex_;
         DeviceInfo info_;
         internal::UniqueHandle filter_, pin_;
-        KSSTATE pinState_ = KSSTATE_STOP;  // last state the driver accepted
+        KSSTATE pinState_ = KSSTATE_STOP;
         std::vector<BYTE> writeBuffer_;
-        internal::UniqueHandle writeEvent_;  // completion event of the write in progress (N10)
-        HMIDIOUT winmm_ = nullptr;           // Transport::Shared
-        internal::UniqueHandle winmmDone_;   // signalled by WinMM when a long message is done
+        internal::UniqueHandle writeEvent_;
+        HMIDIOUT winmm_ = nullptr;
+        internal::UniqueHandle winmmDone_;
     };
     MidiOut::MidiOut() : pimpl_(std::make_unique<MidiOutImpl>()) {}
-    // A moved-from MidiOut has pimpl_ == nullptr: every member below must tolerate it (L1).
     MidiOut::~MidiOut() noexcept {
         if (pimpl_) {
             try {
@@ -1405,7 +1275,7 @@ namespace ksmidi {
     MidiOut::MidiOut(MidiOut&&) noexcept = default;
     MidiOut& MidiOut::operator=(MidiOut&&) noexcept = default;
     void MidiOut::openPort(unsigned int portNumber) {
-        if (!pimpl_) pimpl_ = std::make_unique<MidiOutImpl>();  // reuse of a moved-from object
+        if (!pimpl_) pimpl_ = std::make_unique<MidiOutImpl>();
         pimpl_->openPort(portNumber);
     }
     void MidiOut::openPort(unsigned int portNumber, Transport transport) {
@@ -1430,8 +1300,6 @@ namespace ksmidi {
     void MidiOut::sendMessage(const BYTE* message, size_t size) {
         if (pimpl_) pimpl_->sendMessageImpl(message, size);
     }
-    // A braced list matches the byte vector and ump::UmpMessage (an aggregate) equally well;
-    // this overload is an exact match for it (N8).
     void MidiOut::sendMessage(std::initializer_list<BYTE> message) {
         if (pimpl_) pimpl_->sendMessageImpl(message.begin(), message.size());
     }
@@ -1476,8 +1344,6 @@ namespace ksmidi {
     class MidiIn::MidiInImpl final : public MidiIn::MidiInImplBase {
         friend struct ::ksmidi::detail::TestAccess;
 
-        // One overlapped IOCTL_KS_READ_STREAM. While `inFlight` is true the kernel owns
-        // `data`, `header` and `overlapped`: the request must not be freed or reused.
         struct ReadRequest {
             internal::UniqueHandle event;
             std::vector<BYTE> data;
@@ -1499,7 +1365,6 @@ namespace ksmidi {
             messageQueue_(settings.messageQueueSize),
             umpMessageQueue_(settings.umpMessageQueueSize),
             errorQueue_(settings.errorQueueSize) {
-            // The reader waits on one event per buffer plus its stop event.
             if (settings.bufferCount < 2 || settings.bufferCount > MAXIMUM_WAIT_OBJECTS - 1)
                 throw KsMidiError("Buffer count must be between 2 and 63.", E_INVALIDARG);
             if (settings.eventAlignment != 4 && settings.eventAlignment != 8)
@@ -1523,10 +1388,6 @@ namespace ksmidi {
             openDevice(internal::directPortInfo(true, portNumber));
         }
         Transport transport() const noexcept override { return Transport::Direct; }
-        // Opens the filter and the pin of the port described by `info`, then starts the pin and
-        // the reader thread. Called with mutex_ held, after closePortImpl(). If a step fails, what
-        // was opened is closed again before the exception propagates (N4). Test seam: the unit
-        // tests call it with a simulated PinIo, since no port exists without a device.
         void openDevice(const DeviceInfo& info) {
             try {
                 info_ = info;
@@ -1569,19 +1430,15 @@ namespace ksmidi {
                 startStreamingImpl();
             }
             catch (...) {
-                closePortImpl();  // a failed opening leaves the port closed (N4)
+                closePortImpl();
                 throw;
             }
         }
-        // STOP -> ACQUIRE -> PAUSE -> RUN, one step at a time (L8), as Microsoft's own KS MIDI
-        // client does (microsoft/MIDI src/in-box/Libs/MidiKs/MidiKs.cpp). AVStream splits jumps
-        // into single steps for standard-transport pins anyway; other drivers may not.
         void transitionToRun() {
             setPinState(KSSTATE_ACQUIRE);
             setPinState(KSSTATE_PAUSE);
             setPinState(KSSTATE_RUN);
         }
-        // Starts the reader on the pin in pin_ (already in KSSTATE_RUN). Called with mutex_ held.
         void startStreamingImpl() {
             ResetEvent(stop_event_.get());
             parser_.config = { settings_.ignoreSysex, settings_.ignoreTime,
@@ -1607,8 +1464,6 @@ namespace ksmidi {
             st.lastError = mmcss_error_.load(std::memory_order_acquire);
             return st;
         }
-        // While a callback is registered, the callback thread is the only consumer of its
-        // queue: the polling functions return nothing for that queue (L5).
         bool try_pop_message(MidiMessage& m) noexcept override {
             if (message_cb_active_.load(std::memory_order_acquire)) return false;
             return messageQueue_.try_pop(m);
@@ -1666,9 +1521,7 @@ namespace ksmidi {
             stopDispatcher();
             message_callback_ = nullptr;
             ump_callback_ = nullptr;
-            startDispatcherIfNeeded();  // an error callback keeps its thread
-            // Retire the previous callback completely first, so that the reader can never pair
-            // the old function with the new user data (or the reverse).
+            startDispatcherIfNeeded();
             cancelDirectCallbackImpl();
             direct_callback_user_data_.store(ud, std::memory_order_release);
             direct_callback_.store(cb, std::memory_order_release);
@@ -1686,21 +1539,14 @@ namespace ksmidi {
 
     private:
         void closePortImpl() {
-            // The reader may already have stopped by itself (its first read failed, so it set
-            // stop_flag_): it must still be joined, otherwise destroying the joinable
-            // std::thread calls std::terminate (L2).
             stop_flag_.store(true, std::memory_order_release);
             if (reader_thread_.joinable() || pin_) {
-                // The reader cancels and drains its own reads before it returns (L3).
                 SetEvent(stop_event_.get());
                 if (reader_thread_.joinable()) reader_thread_.join();
                 cancelDirectCallbackImpl();
                 if (pin_) {
-                    // An unterminated SysEx is delivered as a final chunk.
                     if (parser_.flush(messageQueue_, info_.name, 0.0, nullptr))
                         SetEvent(dispatch_event_.get());
-                    // Back to STOP one step at a time (L8), from the state the pin reached (N4);
-                    // errors ignored
                     for (KSSTATE state : { KSSTATE_PAUSE, KSSTATE_ACQUIRE, KSSTATE_STOP }) {
                         if (state >= pinState_) continue;
                         try {
@@ -1713,21 +1559,15 @@ namespace ksmidi {
                 }
                 pin_.reset();
             }
-            // A failed opening may have opened the filter without creating a pin (N4).
             filter_.reset();
             info_ = {};
             isUmpStream_ = false;
             pinState_ = KSSTATE_STOP;
-            // The callback thread delivers what is still queued, then stops. The MidiIn facade
-            // keeps the callbacks and applies them again at the next openPort() (L9).
             stopDispatcher();
             message_callback_ = nullptr;
             ump_callback_ = nullptr;
             error_callback_ = nullptr;
         }
-        // Returns only when no direct callback call is running any more (N2), so the caller may
-        // free the user data right afterwards. Not waited for when called from the callback
-        // itself (reader thread).
         void cancelDirectCallbackImpl() {
             direct_callback_.store(nullptr, std::memory_order_seq_cst);
             if (GetCurrentThreadId() != reader_thread_id_.load(std::memory_order_acquire)) {
@@ -1736,22 +1576,18 @@ namespace ksmidi {
             direct_callback_user_data_.store(nullptr, std::memory_order_release);
         }
 
-        // --- Queued callbacks (L5) ---
-        // One dispatcher thread per open port delivers queued messages, UMP packets and errors
-        // to the callbacks that are registered (an error callback works on its own, also in
-        // polling or direct-callback mode). Callbacks are only replaced while the dispatcher is
-        // stopped (set*/cancel* join it first), so it reads them without a lock.
-        void stopDispatcher() {  // mutex_ held
+        // --- Queued callbacks ---
+        void stopDispatcher() {
             if (dispatcher_thread_.joinable()) {
                 stop_dispatch_.store(true, std::memory_order_release);
                 SetEvent(dispatch_event_.get());
-                dispatcher_thread_.join();  // delivers everything queued before it returns
+                dispatcher_thread_.join();
             }
             message_cb_active_.store(false, std::memory_order_release);
             ump_cb_active_.store(false, std::memory_order_release);
             error_cb_active_.store(false, std::memory_order_release);
         }
-        void startDispatcherIfNeeded() {  // mutex_ held, dispatcher stopped
+        void startDispatcherIfNeeded() {
             message_cb_active_.store(static_cast<bool>(message_callback_), std::memory_order_release);
             ump_cb_active_.store(static_cast<bool>(ump_callback_), std::memory_order_release);
             error_cb_active_.store(static_cast<bool>(error_callback_), std::memory_order_release);
@@ -1760,12 +1596,11 @@ namespace ksmidi {
             dispatcher_thread_ = std::thread(&MidiInImpl::dispatchLoop, this);
         }
         void dispatchLoop() {
-            internal::MmcssScope mmcss(settings_.useMmcss, settings_.mmcssTaskName);  // R1
+            internal::MmcssScope mmcss(settings_.useMmcss, settings_.mmcssTaskName);
             dispatcher_mmcss_.store(mmcss.active(), std::memory_order_release);
             if (mmcss.error()) mmcss_error_.store(mmcss.error(), std::memory_order_release);
             internal::tuneCurrentThread(settings_.preferPerformanceCores,
-                settings_.disablePowerThrottling);  // a failure is reported by the reader
-            // An error callback alone never polls: errors are not worth a busy core.
+                settings_.disablePowerThrottling);
             const bool poll = settings_.waitMode != WaitMode::Block &&
                 (message_callback_ || ump_callback_);
             for (;;) {
@@ -1776,13 +1611,7 @@ namespace ksmidi {
             }
             dispatcher_mmcss_.store(false, std::memory_order_release);
         }
-        // Settings::waitMode for the callback thread: polls the queues it delivers (forever for
-        // Spin, spinMicroseconds for SpinThenBlock). True if there is work or a stop request.
         bool pollForWork() {
-            // The reader signals once per buffer, possibly after this thread has already seen and
-            // delivered that buffer by polling: drop such a signal now, so that the next blocking
-            // wait does not return at once. The queues are checked afterwards, so nothing pushed
-            // before the signal is missed; anything pushed later is signalled again.
             WaitForSingleObject(dispatch_event_.get(), 0);
             const bool forever = settings_.waitMode == WaitMode::Spin;
             const long long deadline = forever ? 0 : internal::qpcTicks() + spinTicks_;
@@ -1796,8 +1625,6 @@ namespace ksmidi {
                 YieldProcessor();
             }
         }
-        // Callbacks must not throw; an exception escaping one is discarded so that it cannot
-        // terminate the process from this thread.
         void deliverPending() noexcept {
             if (message_callback_) {
                 MidiMessage m;
@@ -1822,23 +1649,8 @@ namespace ksmidi {
             }
         }
 
-        // Reader thread (L3, N1):
-        // - every read that was queued successfully is "in flight" until GetOverlappedResult
-        //   has reaped it; meanwhile its buffer, KSSTREAM_HEADER and OVERLAPPED belong to the
-        //   kernel;
-        // - the wait set also contains stop_event_, so closePort() can always wake the thread,
-        //   even when no read is in flight;
-        // - when no read is in flight any more (every re-submission failed) the stream is dead:
-        //   the reader reports it and stops by itself instead of blocking forever (N1);
-        // - before returning, the reader cancels the reads still in flight and waits for each of
-        //   them to complete (bounded by kCancelGraceMs). A read the driver has not completed by
-        //   then is deliberately leaked, never freed, because the kernel may still write to it
-        //   (Microsoft's own KS reader in src/in-box/Libs/MidiKs/MidiKs.cpp does the same).
         static constexpr DWORD kCancelGraceMs = 2000;
 
-        // Waits until the read `req` completes (WAIT_OBJECT_0 + 1) or closePort() stops the reader
-        // (WAIT_OBJECT_0), as Settings::waitMode says: Spin polls the request's OVERLAPPED,
-        // SpinThenBlock polls for spinMicroseconds before it blocks like Block.
         DWORD waitForRead(ReadRequest& req) {
             if (settings_.waitMode != WaitMode::Block) {
                 const bool forever = settings_.waitMode == WaitMode::Spin;
@@ -1856,7 +1668,7 @@ namespace ksmidi {
 
         void readerLoop() {
             reader_thread_id_.store(GetCurrentThreadId(), std::memory_order_release);
-            internal::MmcssScope mmcss(settings_.useMmcss, settings_.mmcssTaskName);  // R1
+            internal::MmcssScope mmcss(settings_.useMmcss, settings_.mmcssTaskName);
             reader_mmcss_.store(mmcss.active(), std::memory_order_release);
             if (mmcss.error()) {
                 mmcss_error_.store(mmcss.error(), std::memory_order_release);
@@ -1874,16 +1686,10 @@ namespace ksmidi {
             }
             size_t inFlight = 0;
             for (auto& req : reqs) {
-                if (!queueRead(*req)) break;  // already reported
+                if (!queueRead(*req)) break;
                 ++inFlight;
             }
-            // A pin completes its reads in the order they were queued, so the reader always waits
-            // for the OLDEST read in flight (N5). Several reads often complete before the thread
-            // wakes up (a burst, or a large SysEx that the driver splits over several buffers);
-            // taking whichever completed read has the lowest index, as before, could process a
-            // later buffer first and cut a message in two. The ring order is the queue order:
-            // a read that is re-queued becomes the newest one.
-            size_t head = 0;  // index of the oldest read in flight
+            size_t head = 0;
             while (inFlight > 0 && !stop_flag_.load(std::memory_order_acquire)) {
                 while (!reqs[head]->inFlight) head = (head + 1) % reqs.size();
                 ReadRequest& req = *reqs[head];
@@ -1905,7 +1711,7 @@ namespace ksmidi {
                 else {
                     reportError("MIDI stream read failed.", HRESULT_FROM_WIN32(err));
                 }
-                if (queueRead(req)) ++inFlight;  // now the newest read in flight
+                if (queueRead(req)) ++inFlight;
                 head = (head + 1) % reqs.size();
             }
             if (inFlight == 0 && !stop_flag_.load(std::memory_order_acquire)) {
@@ -1913,13 +1719,11 @@ namespace ksmidi {
                     HRESULT_FROM_WIN32(ERROR_NOT_READY));
             }
             drainReads(reqs);
-            stop_flag_.store(true, std::memory_order_release);  // isPortOpen() == false from now on
+            stop_flag_.store(true, std::memory_order_release);
             reader_mmcss_.store(false, std::memory_order_release);
             reader_thread_id_.store(0, std::memory_order_release);
         }
 
-        // Cancels the reads still in flight and waits until the driver has completed each of
-        // them, so that their memory can be freed safely (L3).
         void drainReads(std::vector<std::unique_ptr<ReadRequest>>& reqs) {
             bool any = false;
             for (const auto& r : reqs) any = any || r->inFlight;
@@ -1931,13 +1735,11 @@ namespace ksmidi {
                 if (!r->inFlight) continue;
                 const ULONGLONG now = GetTickCount64();
                 const DWORD wait = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
-                // Wait for the request's own event, then reap it (GetOverlappedResultEx with a
-                // timeout would need Windows 8 headers).
                 DWORD br = 0;
                 if (WaitForSingleObject(r->event.get(), wait) == WAIT_OBJECT_0 ||
                     HasOverlappedIoCompleted(&r->overlapped)) {
                     GetOverlappedResult(pin_.get(), &r->overlapped, &br, FALSE);
-                    r->inFlight = false;  // completed (normally with ERROR_OPERATION_ABORTED)
+                    r->inFlight = false;
                     continue;
                 }
                 r.release();  // still owned by the driver: leak it on purpose
@@ -1967,17 +1769,11 @@ namespace ksmidi {
             return true;
         }
 
-        // Reader thread only (single producer of errorQueue_).
         void reportError(const std::string& what, HRESULT code) {
             errorQueue_.try_push(KsMidiError(what, code));
             SetEvent(dispatch_event_.get());
         }
 
-        // Walks the KSMUSICFORMAT records of a completed read buffer:
-        // [KSMUSICFORMAT{TimeDeltaMs, ByteCount}][ByteCount data bytes][padding] ...
-        // Records start at multiples of `alignment` (Settings::eventAlignment: 4 = DWORD as the
-        // SDK requires, P3). A record never reads outside [Data, Data + DataUsed); a zero
-        // ByteCount ends the walk.
         template <class OnEvent>
         static void walkEvents(const KSSTREAM_HEADER& header, size_t alignment, OnEvent&& onEvent) {
             const BYTE* p = static_cast<const BYTE*>(header.Data);
@@ -1996,7 +1792,6 @@ namespace ksmidi {
             }
         }
 
-        // Timestamp of one KS event (seconds), see TimestampMode.
         double eventTimestamp(const KSMUSICFORMAT& fmt, double buffer_qpc_ts) noexcept {
             if constexpr (TMode == TimestampMode::QPC) {
                 return buffer_qpc_ts - timestamp_baseline_;
@@ -2004,20 +1799,14 @@ namespace ksmidi {
             else if constexpr (TMode == TimestampMode::None) {
                 (void)fmt;
                 (void)buffer_qpc_ts;
-                return 0.0;  // P4: "No timestamping. Message timestamp is always 0.0."
+                return 0.0;
             }
-            else {  // Driver: the driver's own time stamp of the event (N6)
-                // MIDI 1.0 capture drivers put in TimeDeltaMs the time elapsed since the pin
-                // started running, in milliseconds, for every event: Windows' own KS transport
-                // adds it to the pin's start time (microsoft/MIDI src/in-box/Libs/MidiKs/MidiKs.cpp,
-                // KSMidiInDevice), and the records of one burst all carry the same value. Adding
-                // the values up as deltas, as before, made every later event of a burst later.
+            else {  // Driver
                 (void)buffer_qpc_ts;
                 return fmt.TimeDeltaMs * 0.001;
             }
         }
 
-        // Wakes the callback dispatcher. Called at most once per completed buffer (R2).
         void signalConsumers() noexcept {
             SetEvent(dispatch_event_.get());
             ++signalCount_;
@@ -2034,10 +1823,6 @@ namespace ksmidi {
                     baseline_is_set_.store(true, std::memory_order_relaxed);
                 }
             }
-            // Direct callback hand-shake with cancelDirectCallbackImpl() (N2): raise
-            // direct_in_use_ BEFORE reading the callback pointer and lower it after the last call.
-            // Both sides use a seq_cst store followed by a seq_cst load, so either this thread sees
-            // the cancelled (null) pointer or the cancelling thread sees direct_in_use_ == true.
             direct_in_use_.store(true, std::memory_order_seq_cst);
             const DirectMessageCallback cb = direct_callback_.load(std::memory_order_seq_cst);
             if (cb) {
@@ -2070,7 +1855,7 @@ namespace ksmidi {
                         pushed = true;
                 });
             }
-            if (pushed) signalConsumers();  // R2: one wake-up per buffer, not per KS event
+            if (pushed) signalConsumers();
         }
         void setPinState(KSSTATE state) {
             if (io_->setState(pin_.get(), state))
@@ -2080,12 +1865,11 @@ namespace ksmidi {
                     HRESULT_FROM_WIN32(GetLastError()));
         }
 
-        internal::PinIo* io_ = &internal::ksPinIo();  // test seam; always KsPinIo in production
+        internal::PinIo* io_ = &internal::ksPinIo();
         mutable std::mutex mutex_;
         LockFreeSPSCQueue<MidiMessage> messageQueue_;
         LockFreeSPSCQueue<ump::UmpMessage> umpMessageQueue_;
         LockFreeSPSCQueue<KsMidiError> errorQueue_;
-        // queued callbacks and their dispatcher thread
         MessageCallback message_callback_;
         UmpCallback ump_callback_;
         ErrorCallback error_callback_;
@@ -2094,20 +1878,18 @@ namespace ksmidi {
         std::atomic<bool> error_cb_active_{ false };
         std::thread dispatcher_thread_;
         std::atomic<bool> stop_dispatch_{ true };
-        // direct callback (reader thread)
         std::atomic<DirectMessageCallback> direct_callback_{ nullptr };
         std::atomic<void*> direct_callback_user_data_{ nullptr };
-        std::atomic<bool> direct_in_use_{ false };     // reader may be inside the direct callback
+        std::atomic<bool> direct_in_use_{ false };
         std::atomic<DWORD> reader_thread_id_{ 0 };
-        // MMCSS state of the reader / dispatcher threads (R1)
         std::atomic<bool> reader_mmcss_{ false };
         std::atomic<bool> dispatcher_mmcss_{ false };
         std::atomic<DWORD> mmcss_error_{ 0 };
         std::atomic<bool> stop_flag_{ true };
         internal::UniqueHandle filter_, pin_;
-        KSSTATE pinState_ = KSSTATE_STOP;        // last state the driver accepted
-        internal::UniqueHandle dispatch_event_;  // auto reset: reader -> dispatcher
-        internal::UniqueHandle stop_event_;      // manual reset: closePort -> reader
+        KSSTATE pinState_ = KSSTATE_STOP;
+        internal::UniqueHandle dispatch_event_;
+        internal::UniqueHandle stop_event_;
         DeviceInfo info_;
         Settings settings_;
         std::thread reader_thread_;
@@ -2115,17 +1897,14 @@ namespace ksmidi {
         internal::UmpParser ump_parser_;
         bool isUmpStream_ = false;
         double perf_freq_reciprocal_{ 0.0 };  
-        long long spinTicks_ = 0;  // Settings::spinMicroseconds in QPC ticks
+        long long spinTicks_ = 0;
         double timestamp_baseline_{ 0.0 };
         std::atomic<bool> baseline_is_set_{ false };
-        size_t signalCount_ = 0;  // diagnostic: consumer wake-ups issued by processData
+        size_t signalCount_ = 0;
        
     };
 
-    // --- MidiIn through WinMM (Transport::Shared) ---
-    // The same queues, filters, callbacks and direct callback as MidiInImpl, fed by WinMM's
-    // callback instead of a kernel-streaming reader thread. WinMM calls back on one thread at a
-    // time, which makes that thread the single producer of the queues, like the reader thread.
+    // --- MidiIn through WinMM ---
     class MidiIn::MidiInSharedImpl final : public MidiIn::MidiInImplBase {
         friend struct ::ksmidi::detail::TestAccess;
 
@@ -2155,7 +1934,6 @@ namespace ksmidi {
                 throw KsMidiError("Invalid input port number specified.", E_INVALIDARG);
             openDevice(devices[portNumber], internal::winmmIndexFor(devices, portNumber, true));
         }
-        // Opens WinMM device `winmmIndex` for the port `info`. Called with mutex_ held.
         void openDevice(const DeviceInfo& info, UINT winmmIndex) {
             if (winmmIndex == UINT_MAX)
                 throw KsMidiError("Input port '" + info.name +
@@ -2177,7 +1955,6 @@ namespace ksmidi {
                     "' through Windows", r);
             handle_ = handle;
             try {
-                // System Exclusive arrives in these buffers (MIM_LONGDATA).
                 for (unsigned int i = 0; i < settings_.bufferCount; ++i) {
                     auto buffer = std::make_unique<SysexBuffer>(settings_.bufferSize);
                     r = midiInPrepareHeader(handle_, &buffer->header, sizeof(MIDIHDR));
@@ -2312,7 +2089,6 @@ namespace ksmidi {
             }
         }
 
-        // Seconds, see TimestampMode. WinMM's own time stamp is in milliseconds since midiInStart.
         double timestampFor(DWORD winmmMs) noexcept {
             if (settings_.timestampMode == TimestampMode::None) return 0.0;
             if (settings_.timestampMode == TimestampMode::Driver) return winmmMs * 0.001;
@@ -2326,7 +2102,6 @@ namespace ksmidi {
             return now - timestamp_baseline_;
         }
 
-        // A short message: status and up to two data bytes, packed by WinMM.
         void onShortMessage(DWORD packed, DWORD winmmMs) noexcept {
             const BYTE bytes[3] = { static_cast<BYTE>(packed), static_cast<BYTE>(packed >> 8),
                                     static_cast<BYTE>(packed >> 16) };
@@ -2335,16 +2110,14 @@ namespace ksmidi {
         }
 
         void onLongMessage(MIDIHDR* header, DWORD winmmMs) noexcept {
-            if (closing_.load(std::memory_order_acquire)) return;  // returned by midiInReset
+            if (closing_.load(std::memory_order_acquire)) return;
             if (header->dwBytesRecorded > 0) {
                 deliver(reinterpret_cast<const BYTE*>(header->lpData), header->dwBytesRecorded,
                     timestampFor(winmmMs));
             }
-            // Queued again from the callback, as RtMidi and PortMidi do.
             midiInAddBuffer(handle_, header, sizeof(MIDIHDR));
         }
 
-        // Same hand-shake with cancelDirectCallbackImpl() as MidiInImpl::processData (N2).
         void deliver(const BYTE* data, size_t size, double timestamp) noexcept {
             direct_in_use_.store(true, std::memory_order_seq_cst);
             const DirectMessageCallback cb = direct_callback_.load(std::memory_order_seq_cst);
@@ -2372,11 +2145,10 @@ namespace ksmidi {
             if (handle_) {
                 closing_.store(true, std::memory_order_release);
                 midiInStop(handle_);
-                midiInReset(handle_);  // returns the SysEx buffers
+                midiInReset(handle_);
                 for (auto& b : sysexBuffers_) midiInUnprepareHeader(handle_, &b->header, sizeof(MIDIHDR));
-                midiInClose(handle_);  // no callback runs after this returns
+                midiInClose(handle_);
                 handle_ = nullptr;
-                // An unterminated SysEx is delivered as a final chunk, as on the direct path.
                 if (parser_.flush(messageQueue_, info_.name, 0.0, nullptr))
                     SetEvent(dispatch_event_.get());
             }
@@ -2389,8 +2161,6 @@ namespace ksmidi {
             error_callback_ = nullptr;
         }
 
-        // Returns only when no direct callback call is running any more (N2); not waited for
-        // when called from the callback itself.
         void cancelDirectCallbackImpl() {
             direct_callback_.store(nullptr, std::memory_order_seq_cst);
             if (GetCurrentThreadId() != callback_thread_id_.load(std::memory_order_acquire)) {
@@ -2399,7 +2169,6 @@ namespace ksmidi {
             direct_callback_user_data_.store(nullptr, std::memory_order_release);
         }
 
-        // The callback thread, as in MidiInImpl (L5).
         void stopDispatcher() {
             if (dispatcher_thread_.joinable()) {
                 stop_dispatch_.store(true, std::memory_order_release);
@@ -2456,7 +2225,7 @@ namespace ksmidi {
         Settings settings_;
         mutable std::mutex mutex_;
         LockFreeSPSCQueue<MidiMessage> messageQueue_;
-        LockFreeSPSCQueue<ump::UmpMessage> umpMessageQueue_;  // stays empty: WinMM is MIDI 1.0
+        LockFreeSPSCQueue<ump::UmpMessage> umpMessageQueue_;
         LockFreeSPSCQueue<KsMidiError> errorQueue_;
         MessageCallback message_callback_;
         UmpCallback ump_callback_;
@@ -2511,14 +2280,12 @@ namespace ksmidi {
                 [portNumber](MidiInImplBase& impl) { impl.openPort(portNumber); });
         }
         catch (const KsMidiError& e) {
-            // Auto: when the driver does not give KSMidi a pin of its own, go through Windows.
-            // E_INVALIDARG (no such port, invalid settings) has no other path.
             if (settings.transport != Transport::Auto || e.code() == E_INVALIDARG) throw;
             try {
                 openShared(portNumber, settings);
             }
             catch (const KsMidiError&) {
-                throw e;  // the reason the direct path failed is the useful one
+                throw e;
             }
         }
     }
@@ -2571,10 +2338,6 @@ namespace ksmidi {
         applyCallbacks();
     }
 
-    // Callbacks are stored here and handed to every new implementation, so a callback
-    // registered before openPort() - or before a closePort()/openPort() cycle - is not lost
-    // (L9, same behaviour as RtMidi). The implementation calls the stored object itself
-    // (through a shared pointer), so a stateful callback keeps its state across reopens.
     void MidiIn::applyCallbacks() {
         if (!pimpl_) return;
         if (errorCallback_) {
@@ -2611,8 +2374,6 @@ namespace ksmidi {
     std::optional<MidiMessage> MidiIn::pop_message() noexcept {
         return pimpl_ ? pimpl_->pop_message() : std::nullopt;
     }
-    // The message, UMP and direct callbacks are mutually exclusive: registering one cancels
-    // the other two (unchanged behaviour). The error callback is independent.
     void MidiIn::setCallback(MessageCallback cb) {
         callback_ = cb ? std::make_shared<MessageCallback>(std::move(cb)) : nullptr;
         umpCallback_ = nullptr;

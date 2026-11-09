@@ -11,12 +11,6 @@ class Player {
 public:
     enum Event : WPARAM { Ended = 1 };
 
-    struct Stats {
-        double avgLateUs = 0.0;
-        double maxLateUs = 0.0;
-        uint64_t batches = 0;
-    };
-
     struct Tracks {
         std::shared_ptr<out::Activity[]> live;
         size_t count = 0;
@@ -47,12 +41,12 @@ public:
     out::Mode output() const;
     void set_batching(int ms);
     int batching() const;
+    void set_loop(int mode, int64_t a, int64_t b);
     void transpose(int steps);
     void set_key(int semitones);
     int key() const;
     Tracks tracks() const;
     void release();
-    Stats stats();
     uint64_t notes_played() const { return notes_.load(std::memory_order_relaxed); }
     std::array<uint64_t, 2> held() const {
         return { mask_[0].load(std::memory_order_relaxed), mask_[1].load(std::memory_order_relaxed) };
@@ -79,6 +73,9 @@ private:
         int transpose = 0;
         int key = 0;
         int batchMs = -1;
+        int loop = 0;
+        int64_t loopA = 0;
+        int64_t loopB = 0;
         std::shared_ptr<out::Activity[]> live;
         size_t liveCount = 0;
         out::Mode mode = out::Mode::Keys;
@@ -109,9 +106,6 @@ private:
     int64_t est_ = 0;
     int64_t minMargin_ = 0;
     int64_t maxMargin_ = 0;
-    std::mutex statsMu_;
-    Stats stats_;
-    double lateSum_ = 0.0;
 };
 
 extern Player* g_player;

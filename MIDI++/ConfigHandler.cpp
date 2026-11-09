@@ -63,6 +63,8 @@ namespace midi {
             switch (m) {
             case SustainMode::Down: return "DOWN";
             case SustainMode::Up: return "UP";
+            case SustainMode::Hold: return "HOLD";
+            case SustainMode::Always: return "ALWAYS";
             default: return "IGNORE";
             }
         }
@@ -326,13 +328,15 @@ namespace midi {
             pick(s, "OUT_OF_RANGE_TRANSPOSE", playback.outOfRange, warn, w);
             pick(s, "SUSTAIN_MODE", sustain, warn, w);
             pick(s, "SUSTAIN_CUTOFF", playback.sustainCutoff, warn, w);
+            pick(s, "SOSTENUTO", playback.sostenuto, warn, w);
             pick(s, "GAME_WINDOW_ONLY", playback.gameWindowOnly, warn, w);
             pick(s, "KEY_BATCHING_MS", playback.batchMs, warn, w);
             pick(s, "TYPED_KEYS", playback.typedKeys, warn, w);
             output = upper(output);
             sustain = upper(sustain);
             playback.output = output == "MIDICONNECT" ? OutputMode::MidiConnect : OutputMode::Keys;
-            playback.sustain = sustain == "DOWN" ? SustainMode::Down : sustain == "UP" ? SustainMode::Up : SustainMode::Ignore;
+            playback.sustain = sustain == "DOWN" ? SustainMode::Down : sustain == "UP" ? SustainMode::Up
+                : sustain == "HOLD" ? SustainMode::Hold : sustain == "ALWAYS" ? SustainMode::Always : SustainMode::Ignore;
             clamp_to(playback.sustainCutoff, 0, 127, "SUSTAIN_CUTOFF", warn, w);
             clamp_to(playback.batchMs, -1, 50, "KEY_BATCHING_MS", warn, w);
             int curves = 5 + static_cast<int>(playback.customVelocityCurves.size());
@@ -443,6 +447,7 @@ namespace midi {
             {"OUT_OF_RANGE_TRANSPOSE", playback.outOfRange},
             {"SUSTAIN_MODE", sustainName(playback.sustain)},
             {"SUSTAIN_CUTOFF", playback.sustainCutoff},
+            {"SOSTENUTO", playback.sostenuto},
             {"GAME_WINDOW_ONLY", playback.gameWindowOnly},
             {"KEY_BATCHING_MS", playback.batchMs},
             {"TYPED_KEYS", playback.typedKeys}

@@ -19,10 +19,12 @@ public:
     virtual ~Sink() = default;
     virtual void on(input::Batch& b, int ch, int note, int vel, uint32_t hold = 0) = 0;
     virtual void off(input::Batch& b, int ch, int note) = 0;
-    virtual void pedal(input::Batch& b, int value) = 0;
+    virtual void pedal(input::Batch& b, int value, bool smooth = false) = 0;
     virtual void reset(input::Batch& b) = 0;
     virtual void commit(input::Batch&) {}
     virtual void restart(input::Batch&) {}
+    virtual void sostenuto(input::Batch&, int, bool = false) {}
+    virtual void resume(input::Batch&, int, int) {}
     virtual void begin() {}
     virtual void end() {}
 };

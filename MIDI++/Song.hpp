@@ -44,6 +44,7 @@ struct Song {
     size_t fileBytes = 0;
     std::vector<std::pair<int64_t, double>> tempos;
     std::vector<uint32_t> len;
+    std::vector<uint32_t> pedals;
 
     size_t size() const { return t.size(); }
     double bpm_at(int64_t ns) const;

@@ -21,6 +21,8 @@ out::Mode g_mode = out::Mode::Keys;
 std::atomic<bool> g_active{ false };
 std::atomic<int> g_channel{ -1 };
 std::atomic<int> g_key{ 0 };
+std::atomic<int> g_pedal{ 0 };
+std::atomic<int> g_sostenuto{ 0 };
 std::atomic<uint32_t> g_enabled{ 0xFFFF };
 std::array<std::atomic<uint64_t>, 2> g_mask{};
 std::array<uint8_t, 128> g_count{};
@@ -29,11 +31,6 @@ std::array<std::atomic<uint32_t>, 128> g_hits{};
 std::array<out::Activity, 16> g_channels{};
 std::array<std::array<uint8_t, 128>, 16> g_chanCount{};
 std::atomic<uint64_t> g_messages{ 0 };
-std::atomic<uint64_t> g_sumTicks{ 0 };
-std::atomic<uint64_t> g_maxTicks{ 0 };
-std::atomic<uint64_t> g_seenMessages{ 0 };
-std::atomic<uint64_t> g_seenTicks{ 0 };
-double g_tick = 0.0;
 uint8_t g_status = 0;
 uint8_t g_data[2] = {};
 int g_have = 0;
@@ -120,6 +117,7 @@ void message(uint8_t status, uint8_t d1, uint8_t d2, int64_t t0) {
         input::Batch b;
         if (!g_active.load(std::memory_order_relaxed))
             return;
+        b.origin(t0);
         out::Sink& s = out::sink(g_mode);
         if (type == 0x90 && d2) {
             note_on(b, s, ch, d1, d2);
@@ -128,8 +126,16 @@ void message(uint8_t status, uint8_t d1, uint8_t d2, int64_t t0) {
             note_off(b, s, ch, d1);
         }
         else if (d1 == 64) {
-            if (g_enabled.load(std::memory_order_relaxed) & (1u << ch))
-                s.pedal(b, d2);
+            if (g_enabled.load(std::memory_order_relaxed) & (1u << ch)) {
+                g_pedal.store(d2, std::memory_order_relaxed);
+                s.pedal(b, d2, true);
+            }
+        }
+        else if (d1 == 66) {
+            if (g_enabled.load(std::memory_order_relaxed) & (1u << ch)) {
+                g_sostenuto.store(d2, std::memory_order_relaxed);
+                s.sostenuto(b, d2, true);
+            }
         }
         else if (d1 == 120 || d1 == 123) {
             s.reset(b);
@@ -137,12 +143,7 @@ void message(uint8_t status, uint8_t d1, uint8_t d2, int64_t t0) {
         }
         s.commit(b);
     }
-    const uint64_t ticks = static_cast<uint64_t>(qpc() - t0);
     g_messages.fetch_add(1, std::memory_order_relaxed);
-    g_sumTicks.fetch_add(ticks, std::memory_order_relaxed);
-    uint64_t best = g_maxTicks.load(std::memory_order_relaxed);
-    while (ticks > best && !g_maxTicks.compare_exchange_weak(best, ticks, std::memory_order_relaxed)) {
-    }
 }
 
 void boost() {
@@ -214,15 +215,16 @@ std::vector<Device> devices() {
 }
 
 void attach(out::Mode mode) {
-    if (g_tick == 0.0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        g_tick = static_cast<double>(f.QuadPart) / 1e6;
-    }
     g_mode = mode;
     clear_state();
     g_status = 0;
     g_have = 0;
+    g_pedal.store(0, std::memory_order_relaxed);
+    g_sostenuto.store(0, std::memory_order_relaxed);
+    {
+        input::Batch b;
+        out::sink(mode).resume(b, 0, 0);
+    }
     g_active.store(true, std::memory_order_release);
 }
 
@@ -362,17 +364,15 @@ const out::Activity* channels() {
     return g_channels.data();
 }
 
-Latency latency() {
-    const uint64_t n = g_messages.load(std::memory_order_relaxed);
-    const uint64_t sum = g_sumTicks.load(std::memory_order_relaxed);
-    const uint64_t mx = g_maxTicks.exchange(0, std::memory_order_relaxed);
-    Latency l;
-    const uint64_t dn = n - g_seenMessages.exchange(n, std::memory_order_relaxed);
-    const uint64_t ds = sum - g_seenTicks.exchange(sum, std::memory_order_relaxed);
-    l.messages = dn;
-    l.avgUs = dn && g_tick > 0.0 ? static_cast<double>(ds) / static_cast<double>(dn) / g_tick : 0.0;
-    l.maxUs = g_tick > 0.0 ? static_cast<double>(mx) / g_tick : 0.0;
-    return l;
+uint64_t messages() {
+    return g_messages.load(std::memory_order_relaxed);
+}
+
+void resync() {
+    if (!active())
+        return;
+    input::Batch b;
+    out::sink(g_mode).resume(b, g_pedal.load(std::memory_order_relaxed), g_sostenuto.load(std::memory_order_relaxed));
 }
 
 }

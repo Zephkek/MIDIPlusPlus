@@ -188,6 +188,7 @@
         "KEY_BATCHING_MS": -1,
         "OUTPUT": "KEYS",
         "OUT_OF_RANGE_TRANSPOSE": false,
+        "SOSTENUTO": true,
         "SUSTAIN_CUTOFF": 64,
         "SUSTAIN_MODE": "IGNORE",
         "TYPED_KEYS": false,

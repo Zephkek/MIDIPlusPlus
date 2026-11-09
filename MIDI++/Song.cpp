@@ -153,7 +153,7 @@ namespace {
                     info.program = d1;
                     continue;
                 }
-                else if (!(type == 0xB0 && d1 == 64)) {
+                else if (!(type == 0xB0 && (d1 == 64 || d1 == 66))) {
                     continue;
                 }
                 c.status = status;
@@ -502,7 +502,7 @@ std::shared_ptr<Song> load_song(const std::filesystem::path& path, const LoadOpt
             const uint32_t track = std::min<uint32_t>(ti, 0xFFFF);
             uint32_t kind = type == 0xB0 ? Song::Pedal : (type == 0x90 && c.d2) ? Song::On : Song::Off;
             song->t.push_back(std::llround(at));
-            song->ev.push_back(Song::pack(kind, track, kind == Song::Pedal ? 64 : c.d1, c.d2));
+            song->ev.push_back(Song::pack(kind, track, c.d1, c.d2));
             if (kind == Song::On) {
                 ++song->notes;
                 ++song->tracks[ti].notes;
@@ -532,6 +532,9 @@ std::shared_ptr<Song> load_song(const std::filesystem::path& path, const LoadOpt
         humanize(*song, opt.legit, opt.pairing);
     song->notes -= song->skipped;
     song->length = song->t.empty() ? 0 : song->t.back();
+    for (uint32_t i = 0; i < song->ev.size(); ++i)
+        if (Song::kind(song->ev[i]) == Song::Pedal)
+            song->pedals.push_back(i);
 
     if (song->t.size() <= 4'000'000) {
         const size_t count = song->t.size();

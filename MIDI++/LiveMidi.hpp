@@ -14,12 +14,6 @@ struct Device {
     bool ks = false;
 };
 
-struct Latency {
-    double avgUs = 0.0;
-    double maxUs = 0.0;
-    uint64_t messages = 0;
-};
-
 std::vector<Device> devices();
 bool open(const Device& device, out::Mode mode, std::wstring& error);
 void close();
@@ -32,7 +26,8 @@ void set_channel_enabled(int channel, bool on);
 std::array<uint64_t, 2> held();
 std::array<uint32_t, 128> hits();
 const out::Activity* channels();
-Latency latency();
+uint64_t messages();
+void resync();
 void attach(out::Mode mode);
 void feed(const uint8_t* data, size_t size);
 

@@ -53,7 +53,7 @@ namespace {
         ID_BTN_SUSTAIN, ID_SLIDER_SUSTAIN, ID_BTN_VOLADJ, ID_CB_BATCH, ID_BTN_LEGIT, ID_BTN_TRANSPOSE,
         ID_CB_MIDIDEV, ID_CB_MIDICH, ID_BTN_MIDI2QWERTY, ID_BTN_MIDICONNECT, ID_BTN_REFRESH_MIDI,
         ID_CHK_GAME, ID_CHK_TOP, ID_CHK_DARK, ID_SLIDER_OPACITY, ID_BTN_FOLDER, ID_BTN_STOP,
-        ID_EDIT_LOG, ID_BTN_CLEARLOG, ID_BTN_KEYDN, ID_BTN_KEYUP,
+        ID_EDIT_LOG, ID_BTN_CLEARLOG, ID_BTN_KEYDN, ID_BTN_KEYUP, ID_BTN_LOOP,
     };
 
     enum Hotkey : WPARAM { HK_PLAY, HK_REWIND, HK_SKIP, HK_STOP };
@@ -133,8 +133,13 @@ namespace {
         std::chrono::steady_clock::time_point lastStats = std::chrono::steady_clock::now();
         std::chrono::steady_clock::time_point lastFrame = std::chrono::steady_clock::now();
         double notesPerSec = 0.0, keysPerSec = 0.0;
-        Player::Stats timing;
-        live::Latency live;
+        input::Delivery delivery;
+        uint64_t lastStrikes = 0, lastMerged = 0, liveBase = 0;
+        double merged = 0.0, keyCost = 0.0;
+        uint8_t userMods = 0;
+        bool costNoted = false;
+        int loopMode = 0;
+        int64_t loopA = -1, loopB = -1;
     };
 
     App g;
@@ -332,6 +337,16 @@ namespace {
         return light == 0;
     }
 
+    const wchar_t* sustain_label() {
+        switch (cfg().playback.sustain) {
+        case midi::SustainMode::Down: return L"Sustain: Pedal";
+        case midi::SustainMode::Up: return L"Sustain: Inverted";
+        case midi::SustainMode::Hold: return L"Sustain: Hold";
+        case midi::SustainMode::Always: return L"Sustain: Always";
+        default: return L"Sustain: Off";
+        }
+    }
+
     const wchar_t* output_label() {
         const auto& p = cfg().playback;
         return p.output == midi::OutputMode::MidiConnect ? L"Out: MidiConnect" : p.typedKeys ? L"Out: Typed" : L"Out: Keys";
@@ -350,6 +365,7 @@ namespace {
         case ID_BTN_MIDICONNECT: return live::active() && live::mode() == out::Mode::MidiConnect;
         case ID_BTN_PLAY: return playing();
         case ID_CHK_SHUFFLE: return g.shuffle;
+        case ID_BTN_LOOP: return g.loopMode != 0;
         case ID_CHK_GAME: return p.gameWindowOnly;
         case ID_CHK_TOP: return cfg().ui.alwaysOnTop;
         case ID_CHK_DARK: return ui::dark();
@@ -516,7 +532,9 @@ namespace {
         frame(g.list, lx, S(85), liw, S(207));
         at(ID_BTN_PREV, lx, S(300), S(50), bh);
         at(ID_BTN_NEXT, lx + S(54), S(300), S(50), bh);
-        at(ID_CHK_SHUFFLE, lx + S(108), S(300), liw - S(108), bh);
+        const int sw = (liw - S(108) - gap) / 2;
+        at(ID_CHK_SHUFFLE, lx + S(108), S(300), sw, bh);
+        at(ID_BTN_LOOP, lx + S(108) + sw + gap, S(300), liw - S(108) - sw - gap, bh);
 
         const int x0 = m + lw + S(8), rw = W - x0 - m;
         panel(L"Now Playing", x0, S(6), rw, S(158));
@@ -558,8 +576,8 @@ namespace {
             at(ID_BTN_VELOCITY, x, r2, S(64), bh);
             put(g.curveCombo, x + S(64) + gap, r2, w - S(64) - S(40) - 2 * gap, S(300));
             at(ID_BTN_VLCURVE, x + w - S(40), r2, S(40), bh);
-            at(ID_BTN_SUSTAIN, x, r3, S(84), bh);
-            put(g.cutoff.hwnd(), x + S(84) + gap, r3, w - S(84) - S(28) - 2 * gap, bh);
+            at(ID_BTN_SUSTAIN, x, r3, S(104), bh);
+            put(g.cutoff.hwnd(), x + S(104) + gap, r3, w - S(104) - S(28) - 2 * gap, bh);
             put(g.cutoffValue, x + w - S(28), r3, S(28), bh);
             at(ID_BTN_VOLADJ, x, r4, S(64), bh);
             put(g.batchCombo, x + S(64) + gap, r4, w - S(64) - gap, S(300));
@@ -864,6 +882,8 @@ namespace {
             MessageBoxW(g.wnd, text.c_str(), L"MIDI++", MB_OK | MB_ICONERROR);
             return;
         }
+        g.liveBase = live::messages();
+        g.delivery = {};
         live::set_channel(cfg().ui.midiChannel);
         live::set_key(g.key - g.gameTranspose);
         if (m == out::Mode::Keys && cfg().playback.autoVolume)
@@ -1036,12 +1056,22 @@ namespace {
             g.lastSent = sent;
             g.lastNotes = notes;
             g.lastStats = now;
-            Player::Stats st = g.player.stats();
-            if (st.batches)
-                g.timing = st;
-            live::Latency l = live::latency();
-            if (l.messages)
-                g.live = l;
+            const input::Health h = input::health();
+            const uint64_t strikes = h.strikes - g.lastStrikes, merged = h.merged - g.lastMerged;
+            g.lastStrikes = h.strikes;
+            g.lastMerged = h.merged;
+            g.merged = strikes ? 100.0 * static_cast<double>(merged) / static_cast<double>(strikes) : 0.0;
+            g.keyCost = h.costUs;
+            g.userMods = h.user;
+            const input::Delivery d = input::delivery();
+            if (d.count)
+                g.delivery = d;
+            if (!g.costNoted && g.keysPerSec > 500 && g.keyCost > 100) {
+                g.costNoted = true;
+                say("[Keys] Windows takes %.0f us per key on this PC because other programs hook the keyboard (Discord, overlays, "
+                    "keyboard software), so it tops out near %s keys/s. Past that, repeats on the same key merge.",
+                    g.keyCost, narrow(thousands(static_cast<uint64_t>(1e6 / g.keyCost))).c_str());
+            }
         }
         HWND t = input::target();
         std::wstring left = L"Target: " + (t && IsWindow(t) ? widen(window_title(t)) : std::wstring(L"none"));
@@ -1053,15 +1083,25 @@ namespace {
         left += L"  |  batching " + (batch ? std::to_wstring(batch) + L" ms" : std::wstring(L"off"));
         if (p.batchMs < 0)
             left += L" (auto)";
-        wchar_t right[256];
-        swprintf_s(right, L"%s notes/s  |  %s keys/s  |  timing %.1f us avg, %.0f us worst",
-            thousands(static_cast<uint64_t>(g.notesPerSec)).c_str(), thousands(static_cast<uint64_t>(g.keysPerSec)).c_str(),
-            g.timing.avgLateUs, g.timing.maxLateUs);
+        wchar_t buf[96];
+        std::wstring right = thousands(static_cast<uint64_t>(g.notesPerSec)) + L" notes/s  |  " + thousands(static_cast<uint64_t>(g.keysPerSec)) + L" keys/s";
+        if (g.merged >= 0.5) {
+            swprintf_s(buf, L"  |  %.0f%% merged", g.merged);
+            right += buf;
+        }
+        swprintf_s(buf, L"  |  delay %.1f ms, worst %.1f ms", g.delivery.avgUs / 1000.0, g.delivery.maxUs / 1000.0);
+        right += buf;
+        if (g.keyCost > 0.0) {
+            swprintf_s(buf, L"  |  %.0f us per key", g.keyCost);
+            right += buf;
+        }
+        if (g.userMods && (playing() || live::active()))
+            right += std::wstring(L"  |  keys wait while you hold ") + (g.userMods & input::Ctrl ? L"Ctrl" : g.userMods & input::Alt ? L"Alt" : L"Win");
         g.status.set(left, right);
 
         wchar_t lat[96];
-        if (live::active() && g.live.messages)
-            swprintf_s(lat, L"%.1f us avg, %.0f us worst", g.live.avgUs, g.live.maxUs);
+        if (live::active() && live::messages() != g.liveBase)
+            swprintf_s(lat, L"%.1f us avg, %.0f us worst", g.delivery.avgUs, g.delivery.maxUs);
         else
             swprintf_s(lat, live::active() ? L"Waiting for notes" : L"Live input off");
         SetWindowTextW(g.latency, lat);
@@ -1138,6 +1178,80 @@ namespace {
             show_song();
     }
 
+    void apply_loop() {
+        g.player.set_loop(g.loopMode, g.loopA, g.loopB);
+        if (g.song && g.song->length > 0) {
+            const double len = static_cast<double>(g.song->length);
+            g.seek.set_band(g.loopA >= 0 ? static_cast<int>(g.loopA / len * 10000.0) : -1, g.loopB >= 0 ? static_cast<int>(g.loopB / len * 10000.0) : -1);
+        }
+        else {
+            g.seek.set_band(-1, -1);
+        }
+        redraw(ID_BTN_LOOP);
+    }
+
+    void loop_menu(HWND wnd) {
+        const int64_t pos = g.song ? std::clamp<int64_t>(g.player.position(), 0, g.song->length) : 0;
+        const bool ready = g.loopA >= 0 && g.loopB > g.loopA;
+        HMENU menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, 1, L"Off");
+        AppendMenuW(menu, MF_STRING, 2, L"Whole song");
+        AppendMenuW(menu, MF_STRING | (ready ? 0 : MF_GRAYED), 3, L"Section from A to B");
+        CheckMenuRadioItem(menu, 1, 3, 1 + static_cast<UINT>(g.loopMode), MF_BYCOMMAND);
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        const std::wstring a = L"Set A here (" + fmt_time(pos) + L")", b = L"Set B here (" + fmt_time(pos) + L")";
+        AppendMenuW(menu, MF_STRING | (g.song ? 0 : MF_GRAYED), 4, a.c_str());
+        AppendMenuW(menu, MF_STRING | (g.song ? 0 : MF_GRAYED), 5, b.c_str());
+        AppendMenuW(menu, MF_STRING | (g.loopA >= 0 || g.loopB >= 0 ? 0 : MF_GRAYED), 6, L"Clear A and B");
+        RECT r{};
+        GetWindowRect(GetDlgItem(wnd, ID_BTN_LOOP), &r);
+        if (!(GetWindowLongW(wnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE))
+            SetForegroundWindow(wnd);
+        const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, wnd, nullptr);
+        PostMessageW(wnd, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+        switch (cmd) {
+        case 1:
+            g.loopMode = 0;
+            say("[LOOP] Off");
+            break;
+        case 2:
+            g.loopMode = 1;
+            say("[LOOP] Whole song");
+            break;
+        case 3:
+            g.loopMode = 2;
+            say("[LOOP] %s to %s", narrow(fmt_time(g.loopA)).c_str(), narrow(fmt_time(g.loopB)).c_str());
+            break;
+        case 4:
+            g.loopA = pos;
+            if (g.loopB >= 0 && g.loopB <= pos)
+                g.loopB = -1;
+            say("[LOOP] A at %s", narrow(fmt_time(pos)).c_str());
+            break;
+        case 5:
+            if (pos <= std::max<int64_t>(0, g.loopA)) {
+                say("[LOOP] B has to come after A");
+                return;
+            }
+            g.loopB = pos;
+            if (g.loopA < 0)
+                g.loopA = 0;
+            g.loopMode = 2;
+            say("[LOOP] %s to %s", narrow(fmt_time(g.loopA)).c_str(), narrow(fmt_time(g.loopB)).c_str());
+            break;
+        case 6:
+            g.loopA = g.loopB = -1;
+            if (g.loopMode == 2)
+                g.loopMode = 0;
+            say("[LOOP] Cleared A and B");
+            break;
+        default:
+            return;
+        }
+        apply_loop();
+    }
+
     void on_loaded(Loaded* raw) {
         std::unique_ptr<Loaded> r(raw);
         if (r->seq != g.loadSeq)
@@ -1153,6 +1267,12 @@ namespace {
         const bool was = keep && playing();
         g.song = r->song;
         g.player.load(g.song, keep ? static_cast<int64_t>(static_cast<double>(r->keep) / 1e9 * g.song->length) : 0);
+        if (!keep) {
+            g.loopA = g.loopB = -1;
+            if (g.loopMode == 2)
+                g.loopMode = 0;
+        }
+        apply_loop();
         show_tracks(keep);
         if (was)
             g.player.play();
@@ -1169,7 +1289,7 @@ namespace {
         say("[Load] Loaded: %s (%s notes, %s) in %.1f ms", narrow(r->path.filename().wstring()).c_str(),
             narrow(thousands(g.song->notes)).c_str(), narrow(fmt_time(g.song->length)).c_str(), r->ms);
         if (g.song->peakNotesPerSec >= 2000 && cfg().playback.batchMs < 0)
-            say("[Load] Black MIDI: %s notes/s at its peak, keys go out in %d ms batches so the game keeps up.",
+            say("[Load] Black MIDI: %s notes/s at its peak. Keys go out in %d ms batches as fast as the game takes them, repeats on a key merge past that.",
                 narrow(thousands(static_cast<uint64_t>(g.song->peakNotesPerSec))).c_str(), g.player.batching());
         if (cfg().playback.autoVolume)
             g.player.recalibrate();
@@ -1303,15 +1423,6 @@ namespace {
             p.velocityKeys = !p.velocityKeys;
             say("[VELOCITY KEY] %s", p.velocityKeys ? "Enabled (ALT+key combos in use)" : "Disabled");
             break;
-        case ID_BTN_SUSTAIN:
-            p.sustain = p.sustain == midi::SustainMode::Ignore ? midi::SustainMode::Down
-                : p.sustain == midi::SustainMode::Down ? midi::SustainMode::Up : midi::SustainMode::Ignore;
-            SetDlgItemTextW(g.wnd, ID_BTN_SUSTAIN, p.sustain == midi::SustainMode::Down ? L"Sustain: Down"
-                : p.sustain == midi::SustainMode::Up ? L"Sustain: Up" : L"Sustain: Off");
-            if (p.sustain == midi::SustainMode::Down) say("[SUSTAIN] DOWN cutoff=%d", p.sustainCutoff);
-            else if (p.sustain == midi::SustainMode::Up) say("[SUSTAIN] UP (inverted) cutoff=%d", p.sustainCutoff);
-            else say("[SUSTAIN] IGNORE");
-            break;
         case ID_BTN_TRANSPOSEOUT:
             p.outOfRange = !p.outOfRange;
             say("[TRANSPOSE] Out of range notes %s", p.outOfRange ? "move into range" : "are dropped");
@@ -1340,6 +1451,10 @@ namespace {
             return;
         }
         out::reload();
+        if (playing())
+            g.player.release();
+        else
+            live::resync();
         if (id == ID_BTN_VOLADJ && p.autoVolume) {
             if (live::active()) {
                 aim("Volume calibration");
@@ -1351,6 +1466,74 @@ namespace {
         refresh_piano_keys();
         redraw(id);
         save_config();
+    }
+
+    void sustain_menu(HWND wnd) {
+        auto& p = cfg().playback;
+        auto& h = cfg().hotkeys;
+        static const struct { midi::SustainMode mode; const wchar_t* text; } modes[] = {
+            { midi::SustainMode::Ignore, L"Off (ignore the pedal)" },
+            { midi::SustainMode::Down, L"Pedal: hold the sustain key while the pedal is down" },
+            { midi::SustainMode::Up, L"Inverted: hold the sustain key while the pedal is up" },
+            { midi::SustainMode::Hold, L"Hold notes: keep the keys down while the pedal is down" },
+            { midi::SustainMode::Always, L"Always: hold the sustain key the whole song" },
+        };
+        static const struct { const char* vk; const wchar_t* text; } keys[] = {
+            { "VK_SPACE", L"Space" }, { "VK_RETURN", L"Enter" }, { "VK_TAB", L"Tab" }, { "VK_BACK", L"Backspace" },
+        };
+        HMENU menu = CreatePopupMenu();
+        HMENU sub = CreatePopupMenu();
+        for (UINT i = 0; i < 5; ++i)
+            AppendMenuW(menu, MF_STRING, 1 + i, modes[i].text);
+        const int vk = input::parse_vk(h.SUSTAIN_KEY);
+        int keyAt = -1;
+        for (UINT i = 0; i < 4; ++i) {
+            AppendMenuW(sub, MF_STRING, 100 + i, keys[i].text);
+            if (input::parse_vk(keys[i].vk) == vk)
+                keyAt = static_cast<int>(i);
+        }
+        if (keyAt < 0) {
+            AppendMenuW(sub, MF_STRING, 104, widen(input::key_label(h.SUSTAIN_KEY)).c_str());
+            keyAt = 4;
+        }
+        for (UINT i = 0; i < 5; ++i)
+            if (modes[i].mode == p.sustain)
+                CheckMenuRadioItem(menu, 1, 5, 1 + i, MF_BYCOMMAND);
+        CheckMenuRadioItem(sub, 100, 104, 100 + static_cast<UINT>(keyAt), MF_BYCOMMAND);
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | (p.sostenuto ? MF_CHECKED : 0), 6, L"Sostenuto pedal (CC66) holds the notes that are down");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), L"Sustain key");
+        RECT r{};
+        GetWindowRect(GetDlgItem(wnd, ID_BTN_SUSTAIN), &r);
+        if (!(GetWindowLongW(wnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE))
+            SetForegroundWindow(wnd);
+        const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, wnd, nullptr);
+        PostMessageW(wnd, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+        if (cmd >= 1 && cmd <= 5)
+            p.sustain = modes[cmd - 1].mode;
+        else if (cmd == 6)
+            p.sostenuto = !p.sostenuto;
+        else if (cmd >= 100 && cmd < 104)
+            h.SUSTAIN_KEY = keys[cmd - 100].vk;
+        else
+            return;
+        SetDlgItemTextW(wnd, ID_BTN_SUSTAIN, sustain_label());
+        out::reload(false);
+        redraw(ID_BTN_SUSTAIN);
+        save_config();
+        const std::string key = input::key_label(h.SUSTAIN_KEY);
+        if (cmd == 6) {
+            say("[SUSTAIN] Sostenuto pedal %s", p.sostenuto ? "on, CC66 holds the notes that are down when it goes down" : "off");
+            return;
+        }
+        switch (p.sustain) {
+        case midi::SustainMode::Down: say("[SUSTAIN] The pedal holds %s (cutoff %d)", key.c_str(), p.sustainCutoff); break;
+        case midi::SustainMode::Up: say("[SUSTAIN] Inverted, %s is held while the pedal is up (cutoff %d)", key.c_str(), p.sustainCutoff); break;
+        case midi::SustainMode::Hold: say("[SUSTAIN] Hold notes, keys stay down while the pedal is down (cutoff %d)", p.sustainCutoff); break;
+        case midi::SustainMode::Always: say("[SUSTAIN] %s is held the whole song", key.c_str()); break;
+        default: say("[SUSTAIN] Off, the pedal is ignored"); break;
+        }
     }
 
     void on_legit_apply() {
@@ -1439,6 +1622,7 @@ namespace {
         button(L"Prev", ID_BTN_PREV);
         button(L"Next", ID_BTN_NEXT);
         button(L"Shuffle", ID_CHK_SHUFFLE);
+        button(L"Loop", ID_BTN_LOOP);
 
         g.lcd.create(wnd);
         button(L"Load", ID_BTN_LOAD);
@@ -1463,8 +1647,7 @@ namespace {
         button(L"Velocity", ID_BTN_VELOCITY);
         g.curveCombo = control(L"combobox", nullptr, CBS_DROPDOWNLIST | WS_VSCROLL, ID_CB_VELOCITY_CURVE);
         button(L"Edit", ID_BTN_VLCURVE);
-        button(c.playback.sustain == midi::SustainMode::Down ? L"Sustain: Down"
-            : c.playback.sustain == midi::SustainMode::Up ? L"Sustain: Up" : L"Sustain: Off", ID_BTN_SUSTAIN);
+        button(sustain_label(), ID_BTN_SUSTAIN);
         g.cutoff.create(wnd, ID_SLIDER_SUSTAIN, 0, 127, c.playback.sustainCutoff);
         g.cutoffValue = control(L"static", std::to_wstring(c.playback.sustainCutoff).c_str(), SS_CENTER | SS_CENTERIMAGE);
         button(L"AutoVol", ID_BTN_VOLADJ);
@@ -1617,9 +1800,14 @@ namespace {
         case ID_BTN_88KEY:
         case ID_BTN_TRANSPOSEOUT:
         case ID_BTN_VELOCITY:
-        case ID_BTN_SUSTAIN:
         case ID_BTN_VOLADJ:
             set_toggle(id);
+            break;
+        case ID_BTN_SUSTAIN:
+            sustain_menu(wnd);
+            break;
+        case ID_BTN_LOOP:
+            loop_menu(wnd);
             break;
         case ID_CB_VELOCITY_CURVE:
             if (code == CBN_DROPDOWN) {
@@ -1942,6 +2130,7 @@ namespace {
             g.player.shutdown();
             if (g.connectBegun)
                 out::sink(out::Mode::MidiConnect).end();
+            input::shutdown();
             save_config();
             PostQuitMessage(0);
             return 0;

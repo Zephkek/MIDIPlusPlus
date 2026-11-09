@@ -210,6 +210,14 @@ int Player::batching() const {
     return effective_batch(st_);
 }
 
+void Player::set_loop(int mode, int64_t a, int64_t b) {
+    std::lock_guard l(mu_);
+    st_.loop = mode == 2 && b > a ? 2 : mode == 1 ? 1 : 0;
+    st_.loopA = std::max<int64_t>(0, a);
+    st_.loopB = b;
+    bump();
+}
+
 void Player::transpose(int steps) {
     std::lock_guard l(mu_);
     st_.transpose = steps;
@@ -236,15 +244,6 @@ void Player::release() {
     std::lock_guard l(mu_);
     st_.release = true;
     bump();
-}
-
-Player::Stats Player::stats() {
-    std::lock_guard l(statsMu_);
-    Stats s = stats_;
-    s.avgLateUs = s.batches ? lateSum_ / static_cast<double>(s.batches) : 0.0;
-    stats_ = {};
-    lateSum_ = 0.0;
-    return s;
 }
 
 bool Player::wait_until(int64_t target, uint64_t seen) {
@@ -305,6 +304,9 @@ void Player::run() {
     std::shared_ptr<out::Activity[]> live;
     size_t liveCount = 0;
     std::vector<uint8_t> held;
+    std::array<std::vector<uint8_t>, 2> pedals;
+    std::array<std::vector<uint32_t>, 2> pressed;
+    std::array<int, 2> pedalOut{};
     std::array<uint32_t, 128> counts{};
     uint64_t bits[2] = {};
     size_t idx = 0;
@@ -317,6 +319,84 @@ void Player::run() {
     auto publish = [&]() {
         mask_[0].store(bits[0], std::memory_order_relaxed);
         mask_[1].store(bits[1], std::memory_order_relaxed);
+    };
+    auto strike = [&](input::Batch& b, out::Sink& sk, size_t i, uint32_t hold) {
+        const uint32_t e = song->ev[i];
+        const int tr = Song::track(e);
+        const int note = Song::note(e);
+        if (!enabled_[tr].load(std::memory_order_relaxed))
+            return false;
+        uint8_t& h = held[static_cast<size_t>(tr) * 128 + note];
+        if (h == 255)
+            return false;
+        ++h;
+        const int k = note + s.key;
+        if (k < 0 || k > 127)
+            return true;
+        const uint32_t vel = static_cast<uint32_t>(Song::vel(e));
+        sk.on(b, 0, k, static_cast<int>(vel), hold);
+        hits_[k].store((((hits_[k].load(std::memory_order_relaxed) >> 8) + 1) << 8) | vel, std::memory_order_relaxed);
+        if (counts[k]++ == 0)
+            bits[k >> 6] |= 1ull << (k & 63);
+        if (static_cast<size_t>(tr) < liveCount) {
+            out::Activity& a = live[static_cast<size_t>(tr)];
+            a.hit.store((((a.hit.load(std::memory_order_relaxed) >> 8) + 1) << 8) | vel, std::memory_order_relaxed);
+            if (h == 1)
+                a.mask[k >> 6].fetch_or(1ull << (k & 63), std::memory_order_relaxed);
+        }
+        return true;
+    };
+    auto set_pedal = [&](int w, int tr, uint8_t v) {
+        uint8_t& old = pedals[w][static_cast<size_t>(tr)];
+        if (!old && v)
+            pressed[w].push_back(static_cast<uint32_t>(tr));
+        else if (old && !v)
+            pressed[w].erase(std::find(pressed[w].begin(), pressed[w].end(), static_cast<uint32_t>(tr)));
+        old = v;
+        int m = 0;
+        for (uint32_t t : pressed[w])
+            if (enabled_[t].load(std::memory_order_relaxed))
+                m = std::max<int>(m, pedals[w][t]);
+        return m;
+    };
+    auto restore = [&]() {
+        for (int w = 0; w < 2; ++w) {
+            std::fill(pedals[w].begin(), pedals[w].end(), uint8_t{ 0 });
+            pressed[w].clear();
+            pedalOut[w] = 0;
+        }
+        for (uint32_t j : song->pedals) {
+            if (j >= idx)
+                break;
+            const uint32_t e = song->ev[j];
+            const int w = Song::note(e) == 66;
+            pedalOut[w] = set_pedal(w, Song::track(e), static_cast<uint8_t>(Song::vel(e)));
+        }
+        input::Batch b;
+        out::Sink& sk = out::sink(mode);
+        const int64_t at = std::max<int64_t>(0, pos_at(s, now()));
+        if (!song->len.empty() && idx) {
+            size_t j = song->index_at(at - 20'000'000'000);
+            for (; j < idx; ++j) {
+                if (Song::kind(song->ev[j]) != Song::On)
+                    continue;
+                const int64_t left = song->t[j] + static_cast<int64_t>(song->len[j]) * 1'000'000 - at;
+                if (left >= 30'000'000)
+                    strike(b, sk, j, static_cast<uint32_t>(left / 1'000'000));
+            }
+        }
+        sk.resume(b, pedalOut[0], pedalOut[1]);
+        sk.commit(b);
+        publish();
+    };
+    auto jump = [&](int64_t to) {
+        std::lock_guard l(mu_);
+        if (gen_.load() != seen)
+            return;
+        st_.pos = to;
+        st_.qpc = now();
+        st_.reseek = true;
+        gen_.fetch_add(1);
     };
     auto silence = [&]() {
         {
@@ -348,7 +428,8 @@ void Player::run() {
             }
             seen = g;
             const bool fresh = c.song != song;
-            if (fresh || c.mode != mode || c.release || c.reseek || c.key != s.key || (s.playing && !c.playing))
+            const bool hush = fresh || c.mode != mode || c.release || c.reseek || c.key != s.key || (s.playing && !c.playing);
+            if (hush)
                 silence();
             mode = c.mode;
             if (fresh) {
@@ -356,6 +437,10 @@ void Player::run() {
                 live = c.live;
                 liveCount = c.liveCount;
                 held.assign(song ? song->tracks.size() * 128 : 0, 0);
+                for (int w = 0; w < 2; ++w) {
+                    pedals[w].assign(song ? song->tracks.size() : 0, 0);
+                    pressed[w].clear();
+                }
                 idx = 0;
             }
             s = c;
@@ -381,6 +466,8 @@ void Player::run() {
             }
             if (song && (c.reseek || fresh))
                 idx = song->index_at(pos_at(s, now()));
+            if (hush && song && s.playing)
+                restore();
             continue;
         }
 
@@ -392,6 +479,10 @@ void Player::run() {
         const auto& times = song->t;
         const auto& evs = song->ev;
         const size_t n = times.size();
+        if (idx >= n && s.loop) {
+            jump(s.loop == 2 ? s.loopA : 0);
+            continue;
+        }
         if (idx >= n) {
             silence();
             bool ended = false;
@@ -409,7 +500,14 @@ void Player::run() {
             continue;
         }
 
+        if (s.loop == 2 && times[idx] >= s.loopB) {
+            const int64_t end = s.qpc + static_cast<int64_t>(static_cast<double>(s.loopB - s.pos) / s.speed * static_cast<double>(freq_) / 1e9);
+            if (wait_until(end, seen))
+                jump(s.loopA);
+            continue;
+        }
         int64_t target = s.qpc + static_cast<int64_t>(static_cast<double>(times[idx] - s.pos) / s.speed * static_cast<double>(freq_) / 1e9);
+        const int64_t due = target;
         if (gap && lastBatch)
             target = std::max(target, lastBatch + gap);
         if (!wait_until(target, seen))
@@ -423,6 +521,7 @@ void Player::run() {
         uint64_t played = 0;
         {
             input::Batch b;
+            b.origin(due);
             out::Sink& sk = out::sink(mode);
             for (size_t i = idx; i < end; ++i) {
                 const uint32_t e = evs[i];
@@ -430,27 +529,8 @@ void Player::run() {
                 const int tr = Song::track(e);
                 const int note = Song::note(e);
                 if (kind == Song::On) {
-                    if (!enabled_[tr].load(std::memory_order_relaxed))
-                        continue;
-                    uint8_t& h = held[static_cast<size_t>(tr) * 128 + note];
-                    if (h == 255)
-                        continue;
-                    ++h;
-                    ++played;
-                    const int k = note + s.key;
-                    if (k < 0 || k > 127)
-                        continue;
-                    const uint32_t vel = static_cast<uint32_t>(Song::vel(e));
-                    sk.on(b, 0, k, static_cast<int>(vel), i < song->len.size() ? song->len[i] : 0);
-                    hits_[k].store((((hits_[k].load(std::memory_order_relaxed) >> 8) + 1) << 8) | vel, std::memory_order_relaxed);
-                    if (counts[k]++ == 0)
-                        bits[k >> 6] |= 1ull << (k & 63);
-                    if (static_cast<size_t>(tr) < liveCount) {
-                        out::Activity& a = live[static_cast<size_t>(tr)];
-                        a.hit.store((((a.hit.load(std::memory_order_relaxed) >> 8) + 1) << 8) | vel, std::memory_order_relaxed);
-                        if (h == 1)
-                            a.mask[k >> 6].fetch_or(1ull << (k & 63), std::memory_order_relaxed);
-                    }
+                    if (strike(b, sk, i, i < song->len.size() ? song->len[i] : 0))
+                        ++played;
                 }
                 else if (kind == Song::Off) {
                     uint8_t& h = held[static_cast<size_t>(tr) * 128 + note];
@@ -466,8 +546,16 @@ void Player::run() {
                     if (!h && static_cast<size_t>(tr) < liveCount)
                         live[static_cast<size_t>(tr)].mask[k >> 6].fetch_and(~(1ull << (k & 63)), std::memory_order_relaxed);
                 }
-                else if (enabled_[tr].load(std::memory_order_relaxed)) {
-                    sk.pedal(b, Song::vel(e));
+                else if (static_cast<size_t>(tr) < pedals[0].size()) {
+                    const int w = note == 66;
+                    const int m = set_pedal(w, tr, static_cast<uint8_t>(Song::vel(e)));
+                    if (m != pedalOut[w]) {
+                        pedalOut[w] = m;
+                        if (w)
+                            sk.sostenuto(b, m);
+                        else
+                            sk.pedal(b, m);
+                    }
                 }
             }
             sk.commit(b);
@@ -476,12 +564,8 @@ void Player::run() {
         lastBatch = q;
         publish();
         notes_.fetch_add(played, std::memory_order_relaxed);
-
-        double late = static_cast<double>(q - target) * 1e6 / static_cast<double>(freq_);
-        std::lock_guard l(statsMu_);
-        ++stats_.batches;
-        lateSum_ += late;
-        stats_.maxLateUs = std::max(stats_.maxLateUs, late);
+        while (!input::wait_room(10) && gen_.load(std::memory_order_relaxed) == seen && !quit_.load(std::memory_order_relaxed)) {
+        }
     }
 
     silence();

@@ -66,8 +66,19 @@ void build(Map& map, Fold& fold, Labels& labels, const std::map<std::string, std
 
 class Keys final : public Sink {
 public:
-    void configure() {
+    void configure(input::Batch& b) {
         const auto& c = midi::Config::getInstance();
+        const input::Stroke sus = input::stroke_for_vk(input::parse_vk(c.hotkeys.SUSTAIN_KEY));
+        const bool remap = c.playback.keys88 != keys88_ || c.playback.outOfRange != fold_;
+        if (remap || (sosOn_ && !c.playback.sostenuto)) {
+            unhold(b);
+            sos_ = false;
+        }
+        sosOn_ = c.playback.sostenuto;
+        if (remap || sus != sustain_ || c.playback.sustain != sustainMode_) {
+            release_deferred(b);
+            key(b, false);
+        }
         auto find = [&](const char* mode) -> const std::map<std::string, std::string>* {
             auto it = c.key_mappings.find(mode);
             return it == c.key_mappings.end() ? nullptr : &it->second;
@@ -91,7 +102,7 @@ public:
         for (int i = 0; i < 32; ++i)
             velKey_[i] = input::parse_key(std::string("alt+") + kVelocityKeys[i]).value_or(input::Stroke{});
 
-        sustain_ = input::stroke_for_vk(input::parse_vk(c.hotkeys.SUSTAIN_KEY));
+        sustain_ = sus;
         volUp_ = input::stroke_for_vk(input::parse_vk(c.hotkeys.VOLUME_UP_KEY));
         volDown_ = input::stroke_for_vk(input::parse_vk(c.hotkeys.VOLUME_DOWN_KEY));
 
@@ -111,6 +122,9 @@ public:
         autovol_ = c.playback.autoVolume;
         sustainMode_ = c.playback.sustain;
         cutoff_ = c.playback.sustainCutoff;
+        pedal_ = value_ >= cutoff_;
+        if (playing_)
+            apply(b);
     }
 
     void on(input::Batch& b, int ch, int note, int vel, uint32_t hold) override {
@@ -153,25 +167,65 @@ public:
         if (!h)
             return;
         --h;
-        if (input::Stroke s = stroke(note))
-            b.release(s);
+        input::Stroke s = stroke(note);
+        if (!s)
+            return;
+        if (sos_ && caught_[note & 127]) {
+            uint8_t& d = caughtOffs_[note & 127];
+            if (d < 255)
+                ++d;
+            return;
+        }
+        if (sustainMode_ == midi::SustainMode::Hold && pedal_) {
+            uint8_t& d = deferred_[note & 127];
+            if (d < 255)
+                ++d;
+            return;
+        }
+        b.release(s);
     }
 
-    void pedal(input::Batch& b, int value) override {
-        if (sustainMode_ == midi::SustainMode::Ignore || !sustain_)
+    void pedal(input::Batch& b, int value, bool smooth) override {
+        value_ = std::clamp(value, 0, 127);
+        const bool on = value_ >= (smooth && pedal_ ? std::max(0, cutoff_ - 4) : cutoff_);
+        if (on == pedal_)
             return;
-        bool down = value >= cutoff_;
-        bool want = sustainMode_ == midi::SustainMode::Down ? down : !down;
-        if (want == pedalDown_)
+        pedal_ = on;
+        apply(b);
+    }
+
+    void sostenuto(input::Batch& b, int value, bool smooth) override {
+        const bool on = sosOn_ && value >= (smooth && sos_ ? std::max(0, cutoff_ - 4) : cutoff_);
+        if (on == sos_)
             return;
-        b.latch(sustain_, want);
-        pedalDown_ = want;
+        sos_ = on;
+        if (on)
+            catch_held();
+        else
+            unhold(b);
+    }
+
+    void resume(input::Batch& b, int value, int sostenuto) override {
+        playing_ = true;
+        value_ = std::clamp(value, 0, 127);
+        pedal_ = value_ >= cutoff_;
+        apply(b);
+        sos_ = sosOn_ && sostenuto >= cutoff_;
+        if (sos_)
+            catch_held();
     }
 
     void reset(input::Batch& b) override {
         b.release_all();
         held_ = {};
-        pedalDown_ = false;
+        deferred_ = {};
+        caught_ = {};
+        caughtOffs_ = {};
+        sos_ = false;
+        pedal_ = false;
+        keyDown_ = false;
+        playing_ = false;
+        value_ = 0;
         lastLevel_ = -1;
         batchVel_ = 0;
     }
@@ -211,6 +265,61 @@ private:
         return f >= 0 ? m[f] : input::Stroke{};
     }
 
+    void apply(input::Batch& b) {
+        switch (sustainMode_) {
+        case midi::SustainMode::Down: key(b, pedal_); break;
+        case midi::SustainMode::Up: key(b, !pedal_); break;
+        case midi::SustainMode::Always: key(b, true); break;
+        case midi::SustainMode::Hold: if (!pedal_) release_deferred(b); break;
+        default: break;
+        }
+    }
+
+    void key(input::Batch& b, bool want) {
+        if (!sustain_ || want == keyDown_)
+            return;
+        b.latch(sustain_, want);
+        keyDown_ = want;
+    }
+
+    void catch_held() {
+        for (int n = 0; n < 128; ++n) {
+            bool down = deferred_[n] > 0;
+            for (int ch = 0; ch < 16 && !down; ++ch)
+                down = held_[ch][n] > 0;
+            caught_[n] = down;
+        }
+    }
+
+    void unhold(input::Batch& b) {
+        const bool keep = sustainMode_ == midi::SustainMode::Hold && pedal_;
+        for (int n = 0; n < 128; ++n) {
+            caught_[n] = 0;
+            for (; caughtOffs_[n]; --caughtOffs_[n]) {
+                if (keep) {
+                    if (deferred_[n] < 255)
+                        ++deferred_[n];
+                }
+                else if (input::Stroke s = stroke(n)) {
+                    b.release(s);
+                }
+            }
+        }
+    }
+
+    void release_deferred(input::Batch& b) {
+        for (int n = 0; n < 128; ++n)
+            for (; deferred_[n]; --deferred_[n]) {
+                if (sos_ && caught_[n]) {
+                    if (caughtOffs_[n] < 255)
+                        ++caughtOffs_[n];
+                }
+                else if (input::Stroke s = stroke(n)) {
+                    b.release(s);
+                }
+            }
+    }
+
     void volume(input::Batch& b, int target) {
         int diff = target - volume_;
         if (std::abs(diff) < step_ || !volUp_ || !volDown_)
@@ -227,10 +336,12 @@ private:
     std::array<input::Stroke, 32> velKey_{};
     std::array<uint8_t, 128> volFor_{};
     std::array<std::array<uint8_t, 128>, 16> held_{};
+    std::array<uint8_t, 128> deferred_{}, caught_{}, caughtOffs_{};
     input::Stroke sustain_{}, volUp_{}, volDown_{};
-    bool keys88_ = false, fold_ = false, velocity_ = false, autovol_ = false, pedalDown_ = false;
+    bool keys88_ = false, fold_ = false, velocity_ = false, autovol_ = false, pedal_ = false, keyDown_ = false, playing_ = false;
+    bool sos_ = false, sosOn_ = true;
     midi::SustainMode sustainMode_ = midi::SustainMode::Ignore;
-    int cutoff_ = 64, lastLevel_ = -1, volume_ = 100, initial_ = 100, min_ = 10, step_ = 10, batchVel_ = 0;
+    int cutoff_ = 64, value_ = 0, lastLevel_ = -1, volume_ = 100, initial_ = 100, min_ = 10, step_ = 10, batchVel_ = 0;
 };
 
 class MidiConnect final : public Sink {
@@ -256,10 +367,15 @@ public:
         frame(b, note / 12, note % 12, 0, 0);
     }
 
-    void pedal(input::Batch& b, int value) override {
+    void pedal(input::Batch& b, int value, bool) override {
         value = std::clamp(value, 0, 127);
         frame(b, 11, 11, value / 12, value % 12);
         pedalOn_ = value >= 64;
+    }
+
+    void resume(input::Batch& b, int value, int) override {
+        if (value)
+            pedal(b, value, false);
     }
 
     void reset(input::Batch& b) override {
@@ -328,7 +444,7 @@ void reload(bool reset) {
         g_keys.reset(b);
         g_connect.reset(b);
     }
-    g_keys.configure();
+    g_keys.configure(b);
 }
 
 void set_layout(HKL layout) {
@@ -338,7 +454,7 @@ void set_layout(HKL layout) {
     g_layout = layout;
     if (g_typed) {
         g_keys.reset(b);
-        g_keys.configure();
+        g_keys.configure(b);
     }
 }
 

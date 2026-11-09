@@ -37,6 +37,7 @@ class Slider {
 public:
     HWND create(HWND parent, int id, int lo, int hi, int value);
     void set(int value);
+    void set_band(int a, int b);
     int value() const { return drag_ ? dragValue_ : value_; }
     bool dragging() const { return drag_; }
     void set_dpi(int dpi) { dpi_ = dpi; InvalidateRect(hwnd_, nullptr, FALSE); }
@@ -48,7 +49,7 @@ private:
     int at(int x) const;
     void notify(WORD code);
     HWND hwnd_ = nullptr;
-    int id_ = 0, dpi_ = 96, lo_ = 0, hi_ = 100, value_ = 0, dragValue_ = 0;
+    int id_ = 0, dpi_ = 96, lo_ = 0, hi_ = 100, value_ = 0, dragValue_ = 0, bandA_ = -1, bandB_ = -1;
     bool drag_ = false;
 };
 

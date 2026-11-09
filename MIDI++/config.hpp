@@ -25,7 +25,7 @@ namespace midi {
     };
 
     enum class NoteHandlingMode { FIFO, LIFO, NoHandling };
-    enum class SustainMode { Ignore, Down, Up };
+    enum class SustainMode { Ignore, Down, Up, Hold, Always };
     enum class OutputMode { Keys, MidiConnect };
 
     struct VolumeSettings {
@@ -85,6 +85,7 @@ namespace midi {
         bool outOfRange = false;
         SustainMode sustain = SustainMode::Ignore;
         int sustainCutoff = 64;
+        bool sostenuto = true;
         bool gameWindowOnly = true;
         int batchMs = -1;
         bool typedKeys = false;

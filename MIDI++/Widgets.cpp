@@ -272,6 +272,14 @@ void Slider::notify(WORD code) {
     SendMessageW(GetParent(hwnd_), WM_COMMAND, MAKEWPARAM(id_, code), reinterpret_cast<LPARAM>(hwnd_));
 }
 
+void Slider::set_band(int a, int b) {
+    if (a == bandA_ && b == bandB_)
+        return;
+    bandA_ = a;
+    bandB_ = b;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void Slider::paint(HDC hdc, const RECT& rc) {
     const Palette& p = pal();
     fill(hdc, rc, p.panel);
@@ -286,6 +294,12 @@ void Slider::paint(HDC hdc, const RECT& rc) {
     Gdiplus::SolidBrush done(gp(p.sliderFill));
     g.FillRectangle(&track, pad, cy - h / 2, w, h);
     g.FillRectangle(&done, pad, cy - h / 2, x - pad, h);
+    if (bandA_ >= lo_) {
+        const float a = pad + static_cast<float>(bandA_ - lo_) / static_cast<float>(hi_ - lo_) * w;
+        const float b = bandB_ > bandA_ ? pad + static_cast<float>(bandB_ - lo_) / static_cast<float>(hi_ - lo_) * w : a + static_cast<float>(scale(2, dpi_));
+        Gdiplus::SolidBrush band(Gdiplus::Color(110, GetRValue(p.accent), GetGValue(p.accent), GetBValue(p.accent)));
+        g.FillRectangle(&band, a, cy - 2 * h, b - a, 4 * h);
+    }
     const float r = static_cast<float>(scale(6, dpi_));
     Gdiplus::SolidBrush knob(gp(p.knob));
     Gdiplus::Pen edge(gp(p.accent), static_cast<float>(scale(2, dpi_)));

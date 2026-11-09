@@ -50,7 +50,6 @@ struct TransposeOptions {
 
 class TransposeEngine {
 public:
-    // Core functionality
     [[nodiscard]] std::string estimateKey(const std::vector<int>& notes,
         const std::vector<double>& durations) const;
     [[nodiscard]] std::string detectGenre(const std::vector<int>& notes,

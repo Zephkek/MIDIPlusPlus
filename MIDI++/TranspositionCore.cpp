@@ -12,7 +12,6 @@
 // Music theory sucks
 // =============================================================================
 
-// Enhanced spectral analysis: Compute pitch-class distribution with harmonic partials.
 static std::vector<double> computeEnhancedPitchClassDistribution(const std::vector<int>& notes,
     const std::vector<double>& durations,
     int numHarmonics = 5) {
@@ -39,7 +38,6 @@ static std::vector<double> computeEnhancedPitchClassDistribution(const std::vect
     return distribution;
 }
 
-// Compute a spectral centroid from a 12-element distribution using reference frequencies.
 static double computeSpectralCentroid(const std::vector<double>& distribution) {
     const std::array<double, 12> refFreq = { 261.63, 277.18, 293.66, 311.13, 329.63, 349.23,
                                             369.99, 392.00, 415.30, 440.00, 466.16, 493.88 };
@@ -958,9 +956,6 @@ std::string TransposeEngine::estimateKey(const std::vector<int>& notes,
     return key_name(find_key(evidence_from_list(notes, durations, kDefaults), kDefaults).key);
 }
 
-// =============================================================================
-// Genre Detection with Enhanced Features (including spectral centroid)
-// =============================================================================
 std::string TransposeEngine::detectGenre(const std::vector<int>& notes,
     const std::vector<double>& durations, double tempo, int timeSignatureNum) const {
     if (notes.empty())
@@ -1017,9 +1012,6 @@ std::string TransposeEngine::detectGenre(const std::vector<int>& notes,
     return "Contemporary Piano";
 }
 
-// =============================================================================
-// Best Transposition Decision (Composite Evaluation)
-// =============================================================================
 int TransposeEngine::findBestTranspose(const std::vector<int>& notes,
     const std::vector<double>& durations,
     const std::string& detectedKey,
@@ -1058,9 +1050,6 @@ TransposePlan TransposeEngine::plan(const Song& song, const std::map<std::string
     return run(song, make_layout(keys, midi::Config::getInstance().playback.typedKeys), options, kDefaults);
 }
 
-// =============================================================================
-// Advanced Analysis Functions
-// =============================================================================
 double TransposeEngine::calculateRhythmComplexity(const std::vector<double>& durations) const {
     if (durations.size() <= 1)
         return 1.0;

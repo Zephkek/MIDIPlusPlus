@@ -354,6 +354,7 @@ namespace midi {
             pick(s, "midiDevice", ui.midiDevice, warn, w);
             pick(s, "midiChannel", ui.midiChannel, warn, w);
             pick(s, "darkMode", ui.darkMode, warn, w);
+            pick(s, "compact", ui.compact, warn, w);
             clamp_to(ui.opacity, 100, 255, "opacity", warn, w);
             clamp_to(ui.sortMode, 0, 3, "sortMode", warn, w);
             clamp_to(ui.midiChannel, -1, 15, "midiChannel", warn, w);
@@ -458,7 +459,8 @@ namespace midi {
             {"sortMode", ui.sortMode},
             {"midiDevice", ui.midiDevice},
             {"midiChannel", ui.midiChannel},
-            {"darkMode", ui.darkMode}
+            {"darkMode", ui.darkMode},
+            {"compact", ui.compact}
         };
         j["PLAYLIST_FILES"] = playlistFiles;
         j["KEY_MAPPINGS"] = key_mappings;

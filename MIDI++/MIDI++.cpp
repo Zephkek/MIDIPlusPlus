@@ -53,7 +53,7 @@ namespace {
         ID_BTN_SUSTAIN, ID_SLIDER_SUSTAIN, ID_BTN_VOLADJ, ID_CB_BATCH, ID_BTN_LEGIT, ID_BTN_TRANSPOSE,
         ID_CB_MIDIDEV, ID_CB_MIDICH, ID_BTN_MIDI2QWERTY, ID_BTN_MIDICONNECT, ID_BTN_REFRESH_MIDI,
         ID_CHK_GAME, ID_CHK_TOP, ID_CHK_DARK, ID_SLIDER_OPACITY, ID_BTN_FOLDER, ID_BTN_STOP,
-        ID_EDIT_LOG, ID_BTN_CLEARLOG, ID_BTN_KEYDN, ID_BTN_KEYUP, ID_BTN_LOOP,
+        ID_EDIT_LOG, ID_BTN_CLEARLOG, ID_BTN_KEYDN, ID_BTN_KEYUP, ID_BTN_LOOP, ID_BTN_COMPACT,
     };
 
     enum Hotkey : WPARAM { HK_PLAY, HK_REWIND, HK_SKIP, HK_STOP };
@@ -140,6 +140,7 @@ namespace {
         bool costNoted = false;
         int loopMode = 0;
         int64_t loopA = -1, loopB = -1;
+        bool compact = false;
     };
 
     App g;
@@ -524,6 +525,34 @@ namespace {
         const int m = S(8), gap = S(4), bh = S(24);
         const int top = S(334);
         const int lw = S(232);
+        if (g.compact) {
+            const int rw = W - 2 * m, nx = m + S(10), nw = rw - S(20), vw = S(196);
+            panel(L"Now Playing", m, S(6), rw, S(158));
+            at(ID_BTN_COMPACT, m + rw - S(78), S(7), S(70), S(18));
+            g.screens.clear();
+            g.screens.push_back({ nx, S(26), nx + nw, S(98) });
+            put(g.lcd.hwnd(), nx + S(1), S(27), nw - vw - S(9), S(70));
+            put(g.visual.hwnd(), nx + nw - vw - S(8), S(33), vw, S(58));
+            const struct { int id; HWND h; int w; int after; } transport[] = {
+                { ID_BTN_PREV, nullptr, 46, 0 }, { ID_BTN_PLAY, nullptr, 54, 0 }, { ID_BTN_NEXT, nullptr, 46, 0 }, { ID_BTN_RESTART, nullptr, 54, 0 },
+                { ID_BTN_REW, nullptr, 40, 0 }, { ID_BTN_SKIP, nullptr, 40, 10 },
+                { 0, g.tempoLabel, 44, 0 }, { ID_BTN_SPEEDDN, nullptr, 24, 0 }, { 0, g.speed, 42, 0 }, { ID_BTN_SPEEDUP, nullptr, 24, 10 },
+                { 0, g.keyLabel, 28, 0 }, { ID_BTN_KEYDN, nullptr, 24, 0 }, { 0, g.keyValue, 34, 0 }, { ID_BTN_KEYUP, nullptr, 24, 0 },
+            };
+            int bx = nx;
+            for (const auto& t : transport) {
+                if (t.id)
+                    at(t.id, bx, S(104), S(t.w), S(26));
+                else
+                    put(t.h, bx, S(104), S(t.w), S(26));
+                bx += S(t.w) + gap + S(t.after);
+            }
+            put(g.seek.hwnd(), nx - S(6), S(136), nw + S(12), S(24));
+            if (dw)
+                EndDeferWindowPos(dw);
+            InvalidateRect(g.wnd, nullptr, TRUE);
+            return;
+        }
         panel(L"Library", m, S(6), lw, top - S(6));
         const int lx = m + S(8), liw = lw - S(16);
         frame(g.search, lx, S(28), liw, S(22));
@@ -538,6 +567,7 @@ namespace {
 
         const int x0 = m + lw + S(8), rw = W - x0 - m;
         panel(L"Now Playing", x0, S(6), rw, S(158));
+        at(ID_BTN_COMPACT, x0 + rw - S(78), S(7), S(70), S(18));
         const int nx = x0 + S(10), nw = rw - S(20);
         const int vw = S(196);
         g.screens.clear();
@@ -1178,6 +1208,36 @@ namespace {
             show_song();
     }
 
+    bool in_compact(HWND c) {
+        static constexpr int ids[] = { ID_BTN_PREV, ID_BTN_PLAY, ID_BTN_NEXT, ID_BTN_RESTART, ID_BTN_REW, ID_BTN_SKIP,
+            ID_BTN_SPEEDDN, ID_BTN_SPEEDUP, ID_BTN_KEYDN, ID_BTN_KEYUP, ID_BTN_COMPACT };
+        for (int id : ids)
+            if (GetDlgItem(g.wnd, id) == c)
+                return true;
+        return c == g.lcd.hwnd() || c == g.visual.hwnd() || c == g.seek.hwnd() || c == g.tempoLabel || c == g.speed
+            || c == g.keyLabel || c == g.keyValue;
+    }
+
+    void set_compact(bool on) {
+        g.compact = on;
+        for (HWND c = GetWindow(g.wnd, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
+            ShowWindow(c, !on || in_compact(c) ? SW_SHOWNA : SW_HIDE);
+        SetDlgItemTextW(g.wnd, ID_BTN_COMPACT, on ? L"Full" : L"Compact");
+        RECT wr{}, cr{};
+        GetWindowRect(g.wnd, &wr);
+        GetClientRect(g.wnd, &cr);
+        const int w = on ? S(640) + (wr.right - wr.left) - cr.right : MulDiv(880, g.dpi, 96);
+        const int h = on ? S(172) + (wr.bottom - wr.top) - cr.bottom : MulDiv(760, g.dpi, 96);
+        int x = wr.left, y = wr.top;
+        MONITORINFO mi{ sizeof(mi) };
+        if (GetMonitorInfoW(MonitorFromWindow(g.wnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+            x = std::max<int>(mi.rcWork.left, std::min<int>(x, mi.rcWork.right - w));
+            y = std::max<int>(mi.rcWork.top, std::min<int>(y, mi.rcWork.bottom - h));
+        }
+        SetWindowPos(g.wnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        layout();
+    }
+
     void apply_loop() {
         g.player.set_loop(g.loopMode, g.loopA, g.loopB);
         if (g.song && g.song->length > 0) {
@@ -1623,6 +1683,7 @@ namespace {
         button(L"Next", ID_BTN_NEXT);
         button(L"Shuffle", ID_CHK_SHUFFLE);
         button(L"Loop", ID_BTN_LOOP);
+        button(L"Compact", ID_BTN_COMPACT);
 
         g.lcd.create(wnd);
         button(L"Load", ID_BTN_LOAD);
@@ -1808,6 +1869,11 @@ namespace {
             break;
         case ID_BTN_LOOP:
             loop_menu(wnd);
+            break;
+        case ID_BTN_COMPACT:
+            set_compact(!g.compact);
+            c.ui.compact = g.compact;
+            save_config();
             break;
         case ID_CB_VELOCITY_CURVE:
             if (code == CBN_DROPDOWN) {
@@ -2238,6 +2304,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     for (const std::string& w : warnings)
         say("[Config] %s", w.c_str());
 
+    if (cfg().ui.compact)
+        set_compact(true);
     layout();
     auto elapsed = std::chrono::steady_clock::now() - started;
     if (elapsed < std::chrono::milliseconds(900))

@@ -99,6 +99,7 @@ namespace midi {
         std::string midiDevice;
         int midiChannel = -1;
         int darkMode = -1;
+        bool compact = false;
     };
 
     class Config {
